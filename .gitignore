@@ -1,3 +1,4 @@
 # Build output is published through GitHub Releases, not committed.
 *.exe
 *.pdb
+build/

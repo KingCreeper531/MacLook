@@ -7,8 +7,8 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Mac Look")]
 [assembly: System.Reflection.AssemblyProduct("Mac Look")]
-[assembly: System.Reflection.AssemblyVersion("2.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("2.2.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.2.1.0")]
 
 namespace MacLook
 {
@@ -39,6 +39,16 @@ namespace MacLook
             {
                 // Emergency: put the Windows taskbar back if Mac Look was killed while it was hidden.
                 Taskbar.Restore();
+                return;
+            }
+            if (args.Length > 1 && args[0].Equals("--make-icon", StringComparison.OrdinalIgnoreCase))
+            {
+                AppIcon.WriteIco(args[1]);   // used by build.ps1
+                return;
+            }
+            if (args.Length > 0 && args[0].Equals("--uninstall", StringComparison.OrdinalIgnoreCase))
+            {
+                Uninstall(Array.IndexOf(args, "--quiet") >= 0);
                 return;
             }
 
@@ -99,6 +109,20 @@ namespace MacLook
             });
 
             app.Run();
+        }
+
+        /// <summary>Started from Windows' Installed apps (or MacLook.exe --uninstall).</summary>
+        private static void Uninstall(bool quiet)
+        {
+            if (!quiet && MessageBox.Show("Uninstall Mac Look?\n\nYour Windows taskbar, wallpaper and window settings will be put back.",
+                    "Uninstall Mac Look", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            bool wipe = !quiet && MessageBox.Show("Also delete your Mac Look settings, dock list and custom icons?",
+                    "Uninstall Mac Look", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            InstallInfo.StopRunning();
+            try { Settings.Load(); if (Wallpaper.CanRestore) Wallpaper.Restore(); } catch { }
+            try { Taskbar.Restore(); } catch { }
+            InstallInfo.Unregister(wipe, Config.Dir);
+            if (!quiet) MessageBox.Show("Mac Look has been removed.", "Uninstall Mac Look", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         /// <summary>Hide the bars while a game or video is fullscreen.</summary>

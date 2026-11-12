@@ -1,14 +1,36 @@
-# Builds MacLook.exe with the C# compiler that ships with Windows (.NET Framework 4.x). No SDK needed.
+# Builds MacLook.exe and MacLookSetup.exe with the C# compiler that ships with Windows (.NET Framework 4.x).
+# No SDK needed.
 $ErrorActionPreference = 'Stop'
-$fw  = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
-$wpf = "$fw\WPF"
+$fw   = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
+$wpf  = "$fw\WPF"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$out  = "$root\build"
+New-Item -ItemType Directory -Force $out | Out-Null
 
-& "$fw\csc.exe" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
-    /out:"$root\MacLook.exe" `
-    /r:"$wpf\PresentationFramework.dll" /r:"$wpf\PresentationCore.dll" /r:"$wpf\WindowsBase.dll" `
-    /r:"$fw\System.Xaml.dll" /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Data.dll `
-    /r:System.Core.dll /r:Microsoft.CSharp.dll `
-    "$root\src\*.cs"
-if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+$refs = @(
+    "/r:$wpf\PresentationFramework.dll", "/r:$wpf\PresentationCore.dll", "/r:$wpf\WindowsBase.dll",
+    "/r:$fw\System.Xaml.dll", "/r:System.Drawing.dll", "/r:System.Windows.Forms.dll", "/r:System.Data.dll",
+    "/r:System.Core.dll", "/r:Microsoft.CSharp.dll"
+)
+function Compile([string[]]$extra) {
+    & "$fw\csc.exe" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 @refs @extra
+    if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+}
+
+# 1. Build once without an icon, and use it to draw the app icon.
+Compile @("/out:$out\MacLook-noicon.exe", "$root\src\*.cs")
+& "$out\MacLook-noicon.exe" --make-icon "$out\MacLook.ico" | Out-Null
+$deadline = (Get-Date).AddSeconds(20)
+while (-not (Test-Path "$out\MacLook.ico") -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+Remove-Item "$out\MacLook-noicon.exe" -ErrorAction SilentlyContinue
+
+# 2. The real app, with its icon.
+Compile @("/out:$root\MacLook.exe", "/win32icon:$out\MacLook.ico", "$root\src\*.cs")
+
+# 3. The installer, with the app embedded inside it.
+Compile @("/out:$root\MacLookSetup.exe", "/win32icon:$out\MacLook.ico", "/win32manifest:$root\setup\app.manifest",
+          "/resource:$root\MacLook.exe,MacLook.exe",
+          "$root\setup\Setup.cs", "$root\src\AppIcon.cs", "$root\src\InstallInfo.cs")
+
 Write-Host "Built $root\MacLook.exe"
+Write-Host "Built $root\MacLookSetup.exe"

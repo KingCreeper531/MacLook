@@ -18,12 +18,18 @@ A macOS-style desktop for Windows 11, rendered in liquid glass. One small `.exe`
 
 ## Install
 
-1. Download `MacLook.exe` from the [latest release](https://github.com/KingCreeper531/MacLook/releases/latest).
-2. Put it somewhere permanent (for example `Documents\MacLook`) and double-click it.
+1. Download **`MacLookSetup.exe`** from the [latest release](https://github.com/KingCreeper531/MacLook/releases/latest).
+2. Run it and click **Install**. It installs just for you (no admin prompt), adds Start menu and Desktop shortcuts, and can open Mac Look at sign-in.
+
+Prefer no installer? Download `MacLook.exe` instead and run it from anywhere.
 
 Windows SmartScreen may warn you because the app isn't code-signed. Choose **More info → Run anyway**.
 
 Updates install automatically. You can turn that off, or check by hand, in **Settings → General**.
+
+**Uninstall:** Windows Settings → Apps → Installed apps → Mac Look → Uninstall. Your taskbar and wallpaper are put back.
+
+Silent options for scripting: `MacLookSetup.exe --silent [--no-launch]` and `MacLook.exe --uninstall --quiet`.
 
 ## Quitting and the Windows taskbar
 
@@ -45,12 +51,12 @@ No SDK needed. This uses the C# compiler that ships with Windows (.NET Framework
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-`MacLook.exe` is written next to `build.ps1`. Settings, the dock list and custom icons live in `%AppData%\MacLook`.
+`MacLook.exe` and `MacLookSetup.exe` are written next to `build.ps1`. Settings, the dock list and custom icons live in `%AppData%\MacLook`.
 
 ## Releasing an update
 
 1. Bump the version in `src/Program.cs` (`AssemblyVersion`).
-2. Build, then publish a GitHub release whose tag is the new version (for example `v2.3.0`) with `MacLook.exe` attached.
+2. Build, then publish a GitHub release whose tag is the new version (for example `v2.3.0`) with both `MacLook.exe` and `MacLookSetup.exe` attached. The updater downloads `MacLook.exe`.
 
 Running copies pick it up within a few hours, or right away with **Check for Updates**.
 
