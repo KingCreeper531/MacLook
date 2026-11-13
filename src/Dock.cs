@@ -172,6 +172,8 @@ namespace MacLook
             edgeTimer.Tick += (s, a) => EdgeTick();
             edgeTimer.Start();
             if (Settings.DockAutoHide) { shown = false; slide.Y = HiddenOffset; }
+            live = new LiveGlass(this, bg, () => GlassStyles.Dock, () => shown);
+            live.Start();
         }
 
         private IntPtr WndProc(IntPtr h, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -181,9 +183,13 @@ namespace MacLook
             return IntPtr.Zero;
         }
 
+        private LiveGlass live;
+
         public void ApplyGlass()
         {
             if (!IsVisible || !shown) return;
+            // Live glass keeps itself up to date from what is really behind the Dock: just ask for a fresh render.
+            if (live != null && live.Working && Settings.LiveGlass) { live.Invalidate(); return; }
             var src = Settings.DockAutoHide ? (localSnap ?? Program.Desktop) : Program.Desktop;
             if (src == null) return;
             GlassFx.Apply(bg, src, GlassStyles.Dock);
@@ -314,6 +320,16 @@ namespace MacLook
             {
                 EasingFunction = new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut }
             });
+        }
+
+        /// <summary>Glide up from below the screen with a spring, e.g. when the screen saver ends.</summary>
+        public void Intro()
+        {
+            if (!IsVisible) return;
+            shown = false;
+            slide.BeginAnimation(TranslateTransform.YProperty, null);
+            slide.Y = HiddenOffset;
+            ShowDock();
         }
 
         public void HideDock()

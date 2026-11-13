@@ -78,7 +78,10 @@ namespace MacLook
             right.Children.Add(Item(Glyph(""), b => Flash(b, () => Program.Spotlight.Toggle())));
             right.Children.Add(Item(Glyph(""), b => Flash(b, () => Program.ControlCenter.Toggle())));
             clock = Text("");
-            right.Children.Add(Item(clock, b => Flash(b, () => Program.NotificationCenter.Toggle())));
+            var clockItem = Item(clock, b => Flash(b, () => Program.NotificationCenter.Toggle()));
+            // Right-click the clock for timers (they show up in the Live Activity pill).
+            clockItem.MouseRightButtonUp += (s, e) => { e.Handled = true; if (Settings.LiveActivities) Open(clockItem, LiveTimer.Menu()); };
+            right.Children.Add(clockItem);
 
             barGlass = new Border { Child = root, UseLayoutRounding = true };
             barGlass.SizeChanged += (s, e) => ApplyGlass();
@@ -88,16 +91,21 @@ namespace MacLook
             wifiItem = (UIElement)right.Children[1];
             soundItem = (UIElement)right.Children[2];
             searchItem = (UIElement)right.Children[3];
+            // Live Activity pill, left of the status icons (inserted after the indexes above are taken).
+            livePill = new LivePill(b => Open(b, LiveTimer.Menu()));
+            right.Children.Insert(0, livePill);
             ApplySettings();
             UpdateNetwork();
         }
 
         private readonly List<UIElement> appMenuItems = new List<UIElement>();
         private UIElement wifiItem, soundItem, searchItem;
+        private LivePill livePill;
 
         /// <summary>Show/hide menu bar items and re-format the clock from Settings.</summary>
         public void ApplySettings()
         {
+            if (livePill != null) livePill.ApplySettings();
             foreach (var e in appMenuItems) e.Visibility = Settings.ShowAppMenus ? Visibility.Visible : Visibility.Collapsed;
             wifiItem.Visibility = Settings.ShowWifi ? Visibility.Visible : Visibility.Collapsed;
             searchItem.Visibility = Settings.ShowSearch ? Visibility.Visible : Visibility.Collapsed;
@@ -210,6 +218,7 @@ namespace MacLook
                 MI("App Store…", null, () => Launcher.Open("ms-windows-store:")),
                 null,
                 MI("Force Quit…", Settings.ForceQuitShortcut ? "Ctrl+Alt+Esc" : null, () => Program.ForceQuitWin.Toggle()),
+                MI("Start Screen Saver", null, () => Launcher.Later(250, ScreenSaver.Show)),
                 null,
                 MI("Sleep", null, Power.Sleep),
                 MI("Restart…", null, Power.Restart),
@@ -405,6 +414,8 @@ namespace MacLook
             taskbarCreatedMsg = Native.RegisterWindowMessage("TaskbarCreated");
 
             Reposition();
+            live = new LiveGlass(this, barGlass, () => GlassStyles.MenuBar, () => true);
+            live.Start();
             if (!Native.RegisterHotKey(hwnd, SpotlightHotkeyId, Native.MOD_ALT | Native.MOD_NOREPEAT, Native.VK_SPACE))
                 Program.Log("Alt+Space is already taken by another app; use the magnifier in the menu bar instead.");
             RegisterShortcuts();
@@ -460,9 +471,18 @@ namespace MacLook
             for (int i = ShotHotkey; i <= ForceQuitHotkey; i++) Native.UnregisterHotKey(hwnd, i);
         }
         /// <summary>Liquid glass from the desktop snapshot; acrylic if there is no snapshot yet.</summary>
+        private LiveGlass live;
+
         public void ApplyGlass()
         {
             if (hwnd == IntPtr.Zero || !IsVisible) return;
+            if (live != null && live.Working && Settings.LiveGlass)
+            {
+                // Live glass follows whatever is behind the bar: just ask it for a fresh render.
+                Native.SetBlur(hwnd, 0, 0);
+                live.Invalidate();
+                return;
+            }
             if (Program.Desktop != null)
             {
                 Native.SetBlur(hwnd, 0, 0);

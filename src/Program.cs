@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.5.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.5.2.0")]
+[assembly: System.Reflection.AssemblyVersion("2.6.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.6.0.0")]
 
 namespace MacLook
 {
@@ -54,7 +54,7 @@ namespace MacLook
             {
                 // Emergency: put the Windows taskbar (and Windows' minimize animation) back if Mac Look was killed.
                 Taskbar.Restore();
-                try { Settings.Load(); WindowAnimator.RestoreAfterCrash(); } catch { }
+                try { Settings.Load(); WindowAnimator.RestoreAfterCrash(); Tiling.RestoreAfterCrash(); } catch { }
                 return;
             }
             if (args.Length > 1 && args[0].Equals("--make-icon", StringComparison.OrdinalIgnoreCase))
@@ -140,6 +140,10 @@ namespace MacLook
                 Try(WindowAnimator.Install);
                 Try(HotCorners.Start);
                 Try(WindowButtons.Start);
+                Try(ClipboardHistory.Start);
+                Try(Tiling.Start);
+                Try(StageManager.Start);
+                Try(ScreenSaver.Start);
                 if (demo) Demo(); else Try(Updater.Start);
             });
 
@@ -198,6 +202,8 @@ namespace MacLook
                 WindowAnimator.ApplySystemAnimation();
                 MenuBar.RegisterShortcuts();
                 WindowButtons.Refresh();
+                ClipboardHistory.Start();   // starts or stops with its setting
+                Tiling.Start();             // same
             }
             catch (Exception ex) { Log(ex); }
         }
@@ -304,6 +310,12 @@ namespace MacLook
             Try(WinKey.Uninstall);
             Try(WindowAnimator.Uninstall);
             Try(WindowButtons.Stop);
+            Try(ClipboardHistory.Stop);
+            Try(StageManager.Stop);
+            Try(ScreenSaver.Stop);
+            Try(NowPlaying.Stop);
+            Try(AudioMeter.Close);
+            Try(Tiling.Stop);
             Try(WindowGlass.RestoreAll);
             Try(AppBar.RemoveAll);
             Try(Taskbar.Restore);

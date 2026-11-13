@@ -34,6 +34,9 @@ namespace MacLook
             FontSize = 13;
             SetResourceReference(ForegroundProperty, "MenuFg");
             Deactivated += (s, e) => HidePanel();
+            // Windows doesn't always let us take focus, and then we'd never hear "Deactivated":
+            // also close when a click lands anywhere outside the panel.
+            ClickAway.Watch(this, HidePanel);
             PreviewKeyDown += (s, e) => { if (e.Key == Key.Escape) { HidePanel(); e.Handled = true; } };
         }
 
@@ -42,11 +45,18 @@ namespace MacLook
             var b = new Border { CornerRadius = new CornerRadius(radius), UseLayoutRounding = true };
             b.SetResourceReference(Border.BackgroundProperty, "MenuBg");
             parts.Add(new KeyValuePair<Border, GlassStyle>(b, style));
-            b.SizeChanged += (s, e) => { if (IsVisible && Snapshot != null) GlassFx.Apply(b, Snapshot, style); };
+            b.SizeChanged += (s, e) => { if (IsVisible && Snapshot != null) GlassFx.Apply(b, Snapshot, GlassStyles.Fresh(style)); };
             return b;
         }
 
         protected void ClearGlassCards() { parts.Clear(); }
+
+        /// <summary>Re-render this panel's glass (e.g. while the Liquid Glass slider moves), with fresh styles.</summary>
+        protected void ReapplyGlass()
+        {
+            if (Snapshot == null) return;
+            foreach (var p in parts) GlassFx.Apply(p.Key, Snapshot, GlassStyles.Fresh(p.Value));
+        }
 
         protected static FrameworkElement WithShadow(Border glass, double radius)
         {
@@ -112,7 +122,7 @@ namespace MacLook
             int capW = Math.Min(x + w, b.Right) - capX;
             int capH = Math.Min(b.Bottom - capY, h + (int)(GrowRoom * s));   // room to grow (e.g. Spotlight results)
             Snapshot = ScreenCapture.CaptureRegion(capX, capY, Math.Max(1, capW), Math.Max(1, capH)) ?? ScreenCapture.Capture();
-            foreach (var p in parts) GlassFx.Apply(p.Key, Snapshot, p.Value);
+            foreach (var p in parts) GlassFx.Apply(p.Key, Snapshot, GlassStyles.Fresh(p.Value));
             Entrance();
         }
 
@@ -199,12 +209,26 @@ namespace MacLook
             return b;
         }
 
+        /// <summary>
+        /// A tactile button: it squishes down when pressed and springs back (with a tiny overshoot) when
+        /// released, like macOS toolbar buttons.
+        /// </summary>
         protected static void Clickable(FrameworkElement e, Action a)
         {
             e.Cursor = Cursors.Hand;
-            e.MouseLeftButtonDown += (s, ev) => { e.Opacity = 0.7; ev.Handled = true; };
-            e.MouseLeave += (s, ev) => e.Opacity = 1;
-            e.MouseLeftButtonUp += (s, ev) => { e.Opacity = 1; ev.Handled = true; a(); };
+            var press = new ScaleTransform(1, 1);
+            e.RenderTransformOrigin = new Point(0.5, 0.5);
+            e.RenderTransform = press;
+            Action<double, double, IEasingFunction> to = (target, ms, ease) =>
+            {
+                press.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(target, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease });
+                press.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(target, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease });
+            };
+            var down = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var up = new ElasticEase { Oscillations = 1, Springiness = 5, EasingMode = EasingMode.EaseOut };
+            e.MouseLeftButtonDown += (s, ev) => { e.Opacity = 0.8; to(0.93, 90, down); ev.Handled = true; };
+            e.MouseLeave += (s, ev) => { e.Opacity = 1; to(1, 260, up); };
+            e.MouseLeftButtonUp += (s, ev) => { e.Opacity = 1; to(1, 320, up); ev.Handled = true; a(); };
         }
     }
 
@@ -336,6 +360,18 @@ namespace MacLook
             row2.Children.Add(SmallTile(Circle("", false, 34), "Night Light", () => { HidePanel(); Launcher.Open("ms-settings:nightlight"); }, new Thickness(5, 0, 0, 0)));
             stack.Children.Add(row2);
 
+            // Row 3: desktop features
+            row3 = new UniformGrid { Columns = 3, Margin = new Thickness(0, 10, 0, 0) };
+            stageCircle = Circle("", Settings.StageManager, 34);
+            row3.Children.Add(SmallTile(stageCircle, "Stage Manager", () =>
+            {
+                StageManager.Toggle();
+                stageCircle.SetResourceReference(Border.BackgroundProperty, Settings.StageManager ? "Accent" : "Inactive");
+            }, new Thickness(0, 0, 5, 0)));
+            row3.Children.Add(SmallTile(Circle("", false, 34), "Screen Saver", () => { HidePanel(); Launcher.Later(250, ScreenSaver.Show); }, new Thickness(5, 0, 5, 0)));
+            row3.Children.Add(SmallTile(Circle("", false, 34), "Mini Player", () => { HidePanel(); MiniPlayer.Toggle(); }, new Thickness(5, 0, 0, 0)));
+            stack.Children.Add(row3);
+
             // Display
             var disp = new StackPanel();
             disp.Children.Add(Label("Display", 13, true));
@@ -346,6 +382,21 @@ namespace MacLook
             var dispModule = Module(disp);
             dispModule.Margin = new Thickness(0, 10, 0, 0);
             stack.Children.Add(dispModule);
+
+            // Liquid Glass: drag from crystal-clear refractive glass to frosted, and every glass surface follows live.
+            var lg = new StackPanel();
+            var lgHead = new DockPanel();
+            glassName = Label("", 11, false, 0.6);
+            DockPanel.SetDock(glassName, Dock.Right);
+            lgHead.Children.Add(glassName);
+            lgHead.Children.Add(Label("Liquid Glass", 13, true));
+            lg.Children.Add(lgHead);
+            glassSlider = new ElasticSlider("") { Margin = new Thickness(0, 8, 0, 0) };
+            glassSlider.ValueChanged += v => { Settings.GlassClarity = v; glassName.Text = ClarityName(v); MorphGlass(); };
+            lg.Children.Add(glassSlider);
+            var lgModule = Module(lg);
+            lgModule.Margin = new Thickness(0, 10, 0, 0);
+            stack.Children.Add(lgModule);
 
             // Sound
             var sound = new StackPanel();
@@ -359,20 +410,58 @@ namespace MacLook
             soundModule.Margin = new Thickness(0, 10, 0, 0);
             stack.Children.Add(soundModule);
 
-            // Now playing
+            // Now playing: what's playing in any app; click it for the mini player.
             var media = new DockPanel();
-            var mlabel = Label("Now Playing", 13, true);
-            media.Children.Add(mlabel);
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(MediaButton("", 0xB1));
-            buttons.Children.Add(MediaButton("", 0xB3));
-            buttons.Children.Add(MediaButton("", 0xB0));
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+            buttons.Children.Add(MediaButton("", 0xB1, NowPlaying.Previous));
+            buttons.Children.Add(MediaButton("", 0xB3, NowPlaying.PlayPause));
+            buttons.Children.Add(MediaButton("", 0xB0, NowPlaying.Next));
             DockPanel.SetDock(buttons, Dock.Right);
-            media.Children.Insert(0, buttons);
+            media.Children.Add(buttons);
+            var info = new StackPanel { Orientation = Orientation.Horizontal, Background = Brushes.Transparent };
+            nowArt = new Image { Width = 34, Height = 34, Margin = new Thickness(0, 0, 10, 0), Visibility = Visibility.Collapsed, Clip = new RectangleGeometry(new Rect(0, 0, 34, 34), 7, 7) };
+            RenderOptions.SetBitmapScalingMode(nowArt, BitmapScalingMode.HighQuality);
+            info.Children.Add(nowArt);
+            var words = new StackPanel { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 170 };
+            nowTitle = Label("Now Playing", 13, true);
+            nowArtist = Label("", 11, false, 0.6);
+            nowArtist.Visibility = Visibility.Collapsed;
+            words.Children.Add(nowTitle);
+            words.Children.Add(nowArtist);
+            info.Children.Add(words);
+            Clickable(info, () => { HidePanel(); MiniPlayer.Toggle(); });
+            media.Children.Add(info);
+            NowPlaying.Changed += UpdateNowPlaying;
             var mediaModule = Module(media);
             mediaModule.Margin = new Thickness(0, 10, 0, 0);
             stack.Children.Add(mediaModule);
             return stack;
+        }
+
+        private UniformGrid row3;
+        private Border stageCircle;
+        private ElasticSlider glassSlider;
+        private TextBlock glassName;
+        private bool morphQueued;
+        private int saveTicket;
+        private const int MorphEveryMs = 40, SaveAfterMs = 600;
+
+        private static string ClarityName(double v) { return v < 0.2 ? "Clear" : v < 0.4 ? "Light" : v < 0.65 ? "Balanced" : v < 0.85 ? "Tinted" : "Frosted"; }
+
+        /// <summary>Re-render the glass everywhere at most every 40 ms while the slider moves, and save once it rests.</summary>
+        private void MorphGlass()
+        {
+            if (!morphQueued)
+            {
+                morphQueued = true;
+                Launcher.Later(MorphEveryMs, () =>
+                {
+                    morphQueued = false;
+                    try { ReapplyGlass(); Program.RefreshGlass(); } catch (Exception ex) { Program.Log(ex); }
+                });
+            }
+            int ticket = ++saveTicket;
+            Launcher.Later(SaveAfterMs, () => { if (ticket == saveTicket) { try { Settings.Save(); } catch (Exception ex) { Program.Log(ex); } } });
         }
 
         private static UIElement ConnRow(Border circle, string title, TextBlock sub, Action a)
@@ -421,14 +510,28 @@ namespace MacLook
             return b;
         }
 
-        private static UIElement MediaButton(string glyph, byte vk)
+        private Image nowArt;
+        private TextBlock nowTitle, nowArtist;
+
+        private void UpdateNowPlaying()
+        {
+            bool has = NowPlaying.HasSession && NowPlaying.Title.Length > 0;
+            nowTitle.Text = has ? NowPlaying.Title : "Now Playing";
+            nowArtist.Text = has ? NowPlaying.Artist : "";
+            nowArtist.Visibility = has && NowPlaying.Artist.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            nowArt.Source = has ? NowPlaying.Art : null;
+            nowArt.Visibility = nowArt.Source != null ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>Uses the app's own media controls when Windows shares them, the media keys otherwise.</summary>
+        private static UIElement MediaButton(string glyph, byte vk, Action smtc)
         {
             var t = new TextBlock
             {
                 Text = glyph, FontFamily = new FontFamily(Theme.IconFont), FontSize = 16,
                 Margin = new Thickness(8, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, Background = Brushes.Transparent
             };
-            Clickable(t, () => Native.PressKeys(vk));
+            Clickable(t, () => { if (NowPlaying.Available && NowPlaying.HasSession) smtc(); else Native.PressKeys(vk); });
             return t;
         }
 
@@ -441,6 +544,11 @@ namespace MacLook
         {
             volume.Value = Audio.GetVolume();
             UpdateVolumeGlyph();
+            stageCircle.SetResourceReference(Border.BackgroundProperty, Settings.StageManager ? "Accent" : "Inactive");
+            NowPlaying.Start();   // harmless if already running
+            UpdateNowPlaying();
+            glassSlider.Value = Settings.GlassClarity;
+            glassName.Text = ClarityName(Settings.GlassClarity);
             darkCircle.SetResourceReference(Border.BackgroundProperty, Theme.Dark ? "Accent" : "Inactive");
             wifiStatus.Text = NetStatus();
         }

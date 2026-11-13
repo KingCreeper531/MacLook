@@ -105,6 +105,10 @@ namespace MacLook
         private readonly TextBlock pageTitle;
         private string current = "General";
         private Pix snap;
+        private readonly FrameworkElement frame;
+        private readonly ScaleTransform zoom = new ScaleTransform(1, 1);
+        private readonly LiveGlass live;
+        private bool LiveOn { get { return live.Working && Settings.LiveGlass; } }
 
         public SettingsWindow()
         {
@@ -129,6 +133,9 @@ namespace MacLook
                 Effect = new DropShadowEffect { BlurRadius = 40, ShadowDepth = 12, Direction = 270, Opacity = 0.4 }
             });
             shadowed.Children.Add(glass);
+            frame = shadowed;
+            frame.RenderTransformOrigin = new Point(0.5, 0.5);
+            frame.RenderTransform = zoom;
 
             var layout = new Grid();
             layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(210) });
@@ -187,9 +194,19 @@ namespace MacLook
             {
                 if (e.OriginalSource is TextBox) return;
                 try { DragMove(); } catch { }
-                Recapture();
+                if (!LiveOn) Recapture();   // live glass already shows where we landed
             };
             Closing += (s, e) => { e.Cancel = true; FadeOut(); };
+            // The glass follows what's behind the window, also while it's being dragged.
+            live = new LiveGlass(this, glass, () => GlassStyles.Window, () => !fadingOut);
+        }
+
+        /// <summary>Zoom the window's content between two sizes with a spring (open) or a quick ease (close).</summary>
+        private void Zoom(double from, double to, int ms, IEasingFunction ease)
+        {
+            var a = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease };
+            zoom.BeginAnimation(ScaleTransform.ScaleXProperty, a);
+            zoom.BeginAnimation(ScaleTransform.ScaleYProperty, a);
         }
 
         private UIElement TrafficLights()
@@ -246,8 +263,11 @@ namespace MacLook
                 BeginAnimation(OpacityProperty, null);
                 Opacity = 0;
                 Show();
-                BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200)));
+                // macOS-style: the window zooms up from slightly smaller with a soft spring while it fades in.
+                BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(170)));
+                Zoom(0.9, 1, 320, new BackEase { Amplitude = 0.25, EasingMode = EasingMode.EaseOut });
             }
+            live.Start();
             Activate();
             Native.SetForegroundWindow(new WindowInteropHelper(this).Handle);
             Dispatcher.BeginInvoke(new Action(ApplyGlass), DispatcherPriority.Loaded);
@@ -259,12 +279,15 @@ namespace MacLook
         {
             if (!IsVisible || fadingOut) return;
             fadingOut = true;
-            var a = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(160));
+            var a = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(170));
+            Zoom(1, 0.92, 170, new CubicEase { EasingMode = EasingMode.EaseIn });
             a.Completed += (s, e) =>
             {
                 if (!fadingOut) return;   // Open() took over
                 fadingOut = false;
+                live.Stop();
                 Hide();
+                Zoom(1, 1, 1, null);
                 BeginAnimation(OpacityProperty, null);
                 Opacity = 1;
             };
@@ -273,6 +296,7 @@ namespace MacLook
 
         private void ApplyGlass()
         {
+            if (LiveOn) { live.Invalidate(); return; }
             if (snap != null && IsVisible) GlassFx.Apply(glass, snap, GlassStyles.Window);
         }
 
@@ -280,6 +304,7 @@ namespace MacLook
         public void Recapture()
         {
             if (!IsVisible || fadingOut) return;
+            if (LiveOn) { live.Invalidate(); return; }   // no blink needed: live glass sees behind us anyway
             // The open fade-in holds Opacity at 1 after it ends; drop it, or setting 0 here does nothing
             // and the window photographs itself.
             BeginAnimation(OpacityProperty, null);
@@ -448,8 +473,20 @@ namespace MacLook
         }
 
         // ------------------------------------------------------------------ pages
+        private string shownPage;
+
         private void BuildPage()
         {
+            // A different section slides in from the right; rebuilding the same one (after a change) stays put.
+            if (shownPage != current)
+            {
+                shownPage = current;
+                var slide = new TranslateTransform(18, 0);
+                page.RenderTransform = slide;
+                var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+                slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(18, 0, TimeSpan.FromMilliseconds(220)) { EasingFunction = ease });
+                page.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
+            }
             pageTitle.Text = current;
             page.Children.Clear();
             switch (current)
@@ -479,7 +516,7 @@ namespace MacLook
                 })),
                 Row("Windows key opens Launchpad", "Shortcuts like Win+E and Win+D keep working.", Toggle(Settings.WinKeyLaunchpad, v => Settings.WinKeyLaunchpad = v)),
                 Row("Open Mac Look at login", null, Toggle(login, v => { try { Startup.Enabled = v; } catch (Exception ex) { Program.Log(ex); } }, false)),
-                Row("Use these System Settings for Windows", "The Dock's Settings icon and the menu's System Settings open this window instead of Windows Settings.", Toggle(Settings.MacSettingsForWindows, v => Settings.MacSettingsForWindows = v))));
+                Row("Use these System Settings for Windows", "Settings in the Dock, Launchpad and Spotlight, and the menu's System Settings, open this window instead of Windows Settings.", Toggle(Settings.MacSettingsForWindows, v => Settings.MacSettingsForWindows = v))));
             page.Children.Add(Group(
                 Row("Keyboard shortcuts", "Spotlight: Alt+Space    Mission Control: Ctrl+Alt+Up    Launchpad: Windows key", null)));
             page.Children.Add(Group(
@@ -679,6 +716,20 @@ namespace MacLook
         private void GlassPage()
         {
             page.Children.Add(Group(
+                Row("Liquid Glass", "From crystal-clear refractive glass to frosted. Also in Control Center.",
+                    Slider(0, 1, Settings.GlassClarity, "0.00", v => Settings.GlassClarity = v)),
+                Row("Live glass", "The Dock and menu bar glass follows whatever is behind it, all the time. Off uses a photo of your desktop (lighter on older PCs).",
+                    Toggle(Settings.LiveGlass, v => Settings.LiveGlass = v))));
+            page.Children.Add(Caption("Screen Saver"));
+            page.Children.Add(Group(
+                Row("Style", "Aerial: a slow flight over mountains with a big clock. Retro: crisp 1-bit vector lines.",
+                    Segmented(new[] { "Aerial", "Retro" }, new[] { "aerial", "retro" }, Settings.ScreenSaverStyle, v => Settings.ScreenSaverStyle = v)),
+                Row("Lighting", "Auto follows the time of day.",
+                    Segmented(new[] { "Auto", "Morning", "Day", "Evening", "Night" }, new[] { "auto", "morning", "day", "evening", "night" }, Settings.ScreenSaverLighting, v => Settings.ScreenSaverLighting = v)),
+                Row("Start after", "Minutes without using the mouse or keyboard (0 = never). It's a screen saver, not a lock: use Lock Screen in the Apple menu to lock.",
+                    Slider(0, 60, Settings.ScreenSaverMinutes, "0", v => Settings.ScreenSaverMinutes = (int)Math.Round(v))),
+                Row("Preview", null, Button("Preview", () => ScreenSaver.Preview(Settings.ScreenSaverStyle, Settings.ScreenSaverLighting)))));
+            page.Children.Add(Group(
                 Row("Frost", "How blurry things behind the glass look.", Slider(0, 2, Settings.GlassFrost, "0.00", v => Settings.GlassFrost = v)),
                 Row("Tint", "Higher is easier to read, lower is clearer glass.", Slider(0, 1.6, Settings.GlassTint, "0.00", v => Settings.GlassTint = v)),
                 Row("Refraction", "How strongly the curved edges bend the background.", Slider(0, 2.5, Settings.GlassRefraction, "0.00", v => Settings.GlassRefraction = v)),
@@ -688,6 +739,7 @@ namespace MacLook
                 Row("Reset glass", null, Button("Reset", () =>
                 {
                     Settings.GlassFrost = Settings.GlassTint = Settings.GlassRefraction = Settings.GlassShine = 1.0;
+                    Settings.GlassClarity = 0.5;
                     Changed();
                     BuildPage();
                 }))));
@@ -711,6 +763,12 @@ namespace MacLook
                     Toggle(Settings.GrayInactiveButtons, v => { Settings.GrayInactiveButtons = v; WindowButtons.Refresh(); })),
                 Row("Animate windows", "Genie effect when a window minimizes into the Dock, and a fade when it closes.",
                     Toggle(Settings.AnimateWindows, v => Settings.AnimateWindows = v)),
+                Row("Tile windows at screen edges", "Drag a window to the left or right edge (or the top) to fill that part of the screen, with a glass preview. While on, it replaces Windows' own Snap (including Win+Arrow).",
+                    Toggle(Settings.TilingPreview, v => Settings.TilingPreview = v)),
+                Row("Springy window release", "A window you fling across the screen settles with a small spring.",
+                    Toggle(Settings.WindowSpring, v => Settings.WindowSpring = v)),
+                Row("Stage Manager", "Keeps the window you're using in the middle and tucks the others along the left edge. Also in Control Center.",
+                    Toggle(Settings.StageManager, v => { if (v != Settings.StageManager) StageManager.Toggle(); })),
                 Row("Fully see-through File Explorer", "Mac Look can't safely change what's inside other apps' windows. Windhawk's \"Translucent Windows\" mod does that; see the Windhawk app.",
                     Button("Open Windhawk", () => Launcher.Open("windhawk:")))));
         }

@@ -245,10 +245,22 @@ namespace MacLook
         public static string WindowButtons = "replace";   // replace (cover Windows' buttons) | left | off
         public static bool GrayInactiveButtons = false;   // macOS greys the buttons of windows in the background
         public static bool MacSettingsForWindows = true;   // the Dock's Settings icon opens Mac Look's System Settings
+        // Liquid Glass, desktop features (2.6)
+        public static bool LiveGlass = true;               // the Dock / menu bar glass follows what's behind it, all the time
+        public static double GlassClarity = 0.5;          // Control Center slider: 0 = crystal-clear glass, 1 = frosted
+        public static string ScreenSaverStyle = "aerial";  // aerial | retro
+        public static string ScreenSaverLighting = "auto"; // auto (by the clock) | morning | day | evening | night
+        public static int ScreenSaverMinutes = 0;          // start after this many idle minutes (0 = never)
+        public static bool LiveActivities = true;          // menu bar pill for music / timers
+        public static bool ClipboardHistory = true;        // Spotlight keeps recent copied text (in memory only)
+        public static bool StageManager = false;
+        public static bool TilingPreview = true;           // drag a window to the left / right edge to tile it
+        public static bool WindowSpring = true;            // a released window settles with a small spring
         // Internal
         public static string OriginalWallpaper = "";
         public static bool BuiltinsAdded = false;
         public static int OriginalMinAnimate = -1;      // Windows' minimize-animation setting before Mac Look changed it (-1 = unchanged)
+        public static int OriginalWinArranging = -1;    // Windows' own Snap setting before Mac Look's tiling took over (-1 = unchanged)
 
         private static System.Reflection.FieldInfo[] Fields
         {
@@ -300,6 +312,8 @@ namespace MacLook
             GlassTint = Math.Max(0, Math.Min(1.6, GlassTint));
             GlassRefraction = Math.Max(0, Math.Min(2.5, GlassRefraction));
             GlassShine = Math.Max(0, Math.Min(2, GlassShine));
+            GlassClarity = Math.Max(0, Math.Min(1, GlassClarity));
+            ScreenSaverMinutes = Math.Max(0, Math.Min(240, ScreenSaverMinutes));
         }
 
         public static void Save()

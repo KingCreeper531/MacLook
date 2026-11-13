@@ -10,7 +10,12 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $refs = @(
     "/r:$wpf\PresentationFramework.dll", "/r:$wpf\PresentationCore.dll", "/r:$wpf\WindowsBase.dll",
     "/r:$fw\System.Xaml.dll", "/r:System.Drawing.dll", "/r:System.Windows.Forms.dll", "/r:System.Data.dll",
-    "/r:System.Core.dll", "/r:Microsoft.CSharp.dll"
+    "/r:System.Core.dll", "/r:Microsoft.CSharp.dll",
+    # WinRT (Now Playing / media controls). The .winmd files ship with Windows 10/11; no SDK needed.
+    "/r:$fw\System.Runtime.dll", "/r:$fw\System.Runtime.InteropServices.WindowsRuntime.dll",
+    "/r:$env:WINDIR\System32\WinMetadata\Windows.Foundation.winmd",
+    "/r:$env:WINDIR\System32\WinMetadata\Windows.Media.winmd",
+    "/r:$env:WINDIR\System32\WinMetadata\Windows.Storage.winmd"
 )
 function Compile([string[]]$extra) {
     & "$fw\csc.exe" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 @refs @extra

@@ -68,10 +68,18 @@ namespace MacLook
 
         private static Native.WinEventDelegate proc;
         private static readonly List<IntPtr> hooks = new List<IntPtr>();
-        private static IntPtr snapHwnd;
-        private static BitmapSource snap;
-        private static Rect snapRect;
-        private static DateTime snapTime;
+        /// <summary>The last picture of a window, kept so closing it can still be animated after it's gone.</summary>
+        private class Shot { public BitmapSource Img; public Rect Rect; public DateTime Time; }
+        private static readonly Dictionary<IntPtr, Shot> shots = new Dictionary<IntPtr, Shot>();
+        private const int MaxShots = 5;               // the window in use plus the last few: a few MB each
+        private const int BackgroundShotMaxAgeSec = 600;
+
+        private static void Keep(IntPtr h, BitmapSource img, Rect r, DateTime at)
+        {
+            foreach (var dead in shots.Keys.Where(k => !Native.IsWindow(k)).ToList()) shots.Remove(dead);
+            shots[h] = new Shot { Img = img, Rect = r, Time = at };
+            while (shots.Count > MaxShots) shots.Remove(shots.OrderBy(kv => kv.Value.Time).First().Key);
+        }
         private static int originalMinAnimate = -1;
 
         public static void Install()
@@ -150,19 +158,84 @@ namespace MacLook
                 else if (ev == EVENT_SYSTEM_MINIMIZESTART)
                 {
                     if (!IsAppWindow(hwnd)) return;
+                    DateTime until;
+                    if (quietMinimize.TryGetValue(hwnd, out until)) { quietMinimize.Remove(hwnd); if (DateTime.Now < until) return; }
                     BitmapSource img = null;
                     Rect from = Rect.Empty;
                     if (!Native.IsIconic(hwnd)) img = Capture(hwnd, out from);
-                    if (img == null && hwnd == snapHwnd) { img = snap; from = snapRect; }
+                    Shot kept;
+                    if (img == null && shots.TryGetValue(hwnd, out kept)) { img = kept.Img; from = kept.Rect; }
                     if (img == null) return;
                     PlayGenie(img, from, Program.Dock.IconRectFor(hwnd));
                 }
                 else if (ev == EVENT_OBJECT_HIDE)
                 {
-                    if (hwnd != snapHwnd || snap == null || (DateTime.Now - snapTime).TotalSeconds > CloseSnapshotMaxAgeSec) return;
-                    snapHwnd = IntPtr.Zero;
-                    PlayClose(snap, snapRect);
+                    if (hwnd == pendingHwnd && pendingClose != null)
+                    {
+                        // The red button was clicked: its picture is already on screen over the window, so the
+                        // animation starts the instant the window goes, with no gap.
+                        var held = pendingClose;
+                        pendingClose = null; pendingHwnd = IntPtr.Zero;
+                        shots.Remove(hwnd);
+                        held.Go();
+                        return;
+                    }
+                    Shot shot;
+                    if (!shots.TryGetValue(hwnd, out shot)) return;
+                    shots.Remove(hwnd);
+                    double age = (DateTime.Now - shot.Time).TotalSeconds;
+                    // A recent picture is always fine. An older one (a window closed while in the background) only
+                    // if the window hasn't moved or changed size since, so the picture still lines up with it.
+                    if (age > CloseSnapshotMaxAgeSec)
+                    {
+                        if (age > BackgroundShotMaxAgeSec) return;
+                        var fr = Native.FrameRect(hwnd);
+                        if (Math.Abs(fr.Left - shot.Rect.X) > 2 || Math.Abs(fr.Top - shot.Rect.Y) > 2 ||
+                            Math.Abs(fr.Right - fr.Left - shot.Rect.Width) > 2 || Math.Abs(fr.Bottom - fr.Top - shot.Rect.Height) > 2) return;
+                    }
+                    PlayClose(shot.Img, shot.Rect);
                 }
+            }
+            catch (Exception ex) { Program.Log(ex); }
+        }
+
+        private static readonly Dictionary<IntPtr, DateTime> quietMinimize = new Dictionary<IntPtr, DateTime>();
+
+        /// <summary>
+        /// Mac Look itself is about to minimize this window (e.g. Stage Manager tucking it away, which has its
+        /// own animation): skip the genie for it. Call right before minimizing.
+        /// </summary>
+        public static void SkipNextMinimize(IntPtr h)
+        {
+            if (h != IntPtr.Zero) quietMinimize[h] = DateTime.Now.AddSeconds(2);
+        }
+
+        private static GenieOverlay pendingClose;
+        private static IntPtr pendingHwnd;
+        private const int CloseHoldMs = 350;   // if the window is still there by then (e.g. "Save changes?"), let it be
+
+        /// <summary>
+        /// The Mac close button was clicked: put the window's picture up over it right now, so the close
+        /// animation can start the moment the window disappears. Call just before sending SC_CLOSE.
+        /// </summary>
+        public static void CloseClicked(IntPtr h)
+        {
+            try
+            {
+                SnapshotNow(h);
+                Shot shot;
+                if (!Settings.AnimateWindows || !shots.TryGetValue(h, out shot) || (DateTime.Now - shot.Time).TotalSeconds > 1) return;
+                if (pendingClose != null) { try { pendingClose.Close(); } catch { } }
+                var o = new GenieOverlay(shot.Img, shot.Rect, shot.Rect, true);
+                o.Hold();
+                pendingClose = o; pendingHwnd = h;
+                Launcher.Later(CloseHoldMs, () =>
+                {
+                    if (pendingClose != o) return;   // it closed and the animation took over
+                    // The app kept its window (a save prompt, minimise-to-tray...): drop the picture.
+                    pendingClose = null; pendingHwnd = IntPtr.Zero;
+                    try { o.Close(); } catch { }
+                });
             }
             catch (Exception ex) { Program.Log(ex); }
         }
@@ -179,7 +252,7 @@ namespace MacLook
                 Rect r;
                 var img = Capture(h, out r);
                 if (img == null) return;
-                snapHwnd = h; snap = img; snapRect = r; snapTime = DateTime.Now;
+                Keep(h, img, r, DateTime.Now);
             }
             catch (Exception ex) { Program.Log(ex); }
         }
@@ -207,8 +280,9 @@ namespace MacLook
                     {
                         snapBusy = false;
                         // A picture taken right before a close/minimize click (SnapshotNow) is newer: keep that one.
-                        if (img == null || (snapHwnd == h && snapTime > asked)) return;
-                        snapHwnd = h; snap = img; snapRect = r; snapTime = asked;
+                        Shot cur;
+                        if (img == null || (shots.TryGetValue(h, out cur) && cur.Time > asked)) return;
+                        Keep(h, img, r, asked);
                     }));
                 });
             }
@@ -827,6 +901,16 @@ namespace MacLook
                     }
                 }
             }
+
+            /// <summary>Show the picture exactly over the window, still, until Go() (or Close()) is called.</summary>
+            public void Hold()
+            {
+                Show();
+                Frame(0);
+            }
+
+            /// <summary>Start the animation of a held picture.</summary>
+            public void Go() { StartFrames(); }
 
             private static double SmoothStep(double t) { t = Math.Max(0, Math.Min(1, t)); return t * t * (3 - 2 * t); }
             private static double Lerp(double a, double b, double t) { return a + (b - a) * t; }

@@ -205,6 +205,12 @@ namespace MacLook
             LaunchpadPrefs.Uses.TryGetValue(a.Id, out n);
             LaunchpadPrefs.Uses[a.Id] = n + 1;
             LaunchpadPrefs.Save();
+            // Windows' Settings app: open Mac Look's System Settings instead, like the Dock and the Apple menu do.
+            if (Settings.MacSettingsForWindows && a.Key.IndexOf("immersivecontrolpanel", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                Program.SettingsWin.Open("General");
+                return;
+            }
             // Let Launchpad / Spotlight finish fading so they are not in the "before" picture.
             bool overlayUp = (Program.Launchpad != null && Program.Launchpad.IsVisible) || (Program.Spotlight != null && Program.Spotlight.IsVisible);
             Launcher.Later(overlayUp ? 230 : 1, () =>

@@ -24,6 +24,7 @@ namespace MacLook
         public double TintAmount;
         public double Saturation = 1.4;
         public double Highlight = 0.8;
+        public string Name;         // which GlassStyles entry this came from, so it can be re-read after a settings change
     }
 
     internal static class GlassStyles
@@ -34,18 +35,39 @@ namespace MacLook
         /// <summary>Applies the user's Frost / Tint / Refraction / Shine multipliers from Settings.</summary>
         private static GlassStyle Adj(GlassStyle s)
         {
-            s.Blur = (int)Math.Round(s.Blur * Settings.GlassFrost);
-            s.TintAmount = Math.Max(0, Math.Min(0.95, s.TintAmount * Settings.GlassTint));
-            s.Refraction *= Settings.GlassRefraction;
+            // Control Center's Liquid Glass slider: 0 = crystal clear (little frost or tint, strong bending at
+            // the edges), 0.5 = the normal look, 1 = frosted and nearly opaque.
+            double c = Settings.GlassClarity, frost, tint, bend;
+            if (c < 0.5) { double k = c / 0.5; frost = 0.12 + 0.88 * k; tint = 0.25 + 0.75 * k; bend = 1.5 - 0.5 * k; }
+            else { double k = (c - 0.5) / 0.5; frost = 1 + 1.3 * k; tint = 1 + 0.9 * k; bend = 1 - 0.45 * k; }
+
+            s.Blur = (int)Math.Round(s.Blur * Settings.GlassFrost * frost);
+            s.TintAmount = Math.Max(0, Math.Min(0.95, s.TintAmount * Settings.GlassTint * tint));
+            s.Refraction *= Settings.GlassRefraction * bend;
             s.Highlight *= Settings.GlassShine;
             return s;
         }
 
-        public static GlassStyle Dock { get { return Adj(new GlassStyle { Blur = 2, Bezel = 18, Refraction = 16, Tint = BarTint, TintAmount = Theme.Dark ? 0.20 : 0.16, Saturation = 1.5, Highlight = 0.9 }); } }
-        public static GlassStyle MenuBar { get { return Adj(new GlassStyle { Blur = 3, Bezel = 0, Refraction = 0, Tint = BarTint, TintAmount = Theme.Dark ? 0.28 : 0.24, Saturation = 1.35, Highlight = 0.35 }); } }
-        public static GlassStyle Menu { get { return Adj(new GlassStyle { Blur = 14, Bezel = 10, Refraction = 9, Tint = PanelTint, TintAmount = 0.62, Saturation = 1.7, Highlight = 0.75 }); } }
-        public static GlassStyle Panel { get { return Adj(new GlassStyle { Blur = 18, Bezel = 16, Refraction = 12, Tint = PanelTint, TintAmount = 0.48, Saturation = 1.7, Highlight = 0.85 }); } }
-        public static GlassStyle Window { get { return Adj(new GlassStyle { Blur = 22, Bezel = 14, Refraction = 10, Tint = PanelTint, TintAmount = 0.72, Saturation = 1.6, Highlight = 0.7 }); } }
+        /// <summary>The same named style, re-read with the current settings (Liquid Glass slider, Frost, theme...).</summary>
+        public static GlassStyle Fresh(GlassStyle s)
+        {
+            if (s == null) return null;
+            switch (s.Name)
+            {
+                case "Dock": return Dock;
+                case "MenuBar": return MenuBar;
+                case "Menu": return Menu;
+                case "Panel": return Panel;
+                case "Window": return Window;
+                default: return s;
+            }
+        }
+
+        public static GlassStyle Dock { get { return Adj(new GlassStyle { Name = "Dock", Blur = 2, Bezel = 18, Refraction = 16, Tint = BarTint, TintAmount = Theme.Dark ? 0.20 : 0.16, Saturation = 1.5, Highlight = 0.9 }); } }
+        public static GlassStyle MenuBar { get { return Adj(new GlassStyle { Name = "MenuBar", Blur = 3, Bezel = 0, Refraction = 0, Tint = BarTint, TintAmount = Theme.Dark ? 0.28 : 0.24, Saturation = 1.35, Highlight = 0.35 }); } }
+        public static GlassStyle Menu { get { return Adj(new GlassStyle { Name = "Menu", Blur = 14, Bezel = 10, Refraction = 9, Tint = PanelTint, TintAmount = 0.62, Saturation = 1.7, Highlight = 0.75 }); } }
+        public static GlassStyle Panel { get { return Adj(new GlassStyle { Name = "Panel", Blur = 18, Bezel = 16, Refraction = 12, Tint = PanelTint, TintAmount = 0.48, Saturation = 1.7, Highlight = 0.85 }); } }
+        public static GlassStyle Window { get { return Adj(new GlassStyle { Name = "Window", Blur = 22, Bezel = 14, Refraction = 10, Tint = PanelTint, TintAmount = 0.72, Saturation = 1.6, Highlight = 0.7 }); } }
     }
 
     internal static class ScreenCapture

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -378,7 +379,8 @@ namespace MacLook
             {
                 e.Handled = true;
                 int sc = index == 0 ? SC_CLOSE : index == 1 ? SC_MINIMIZE : (Native.IsZoomed(target) ? SC_RESTORE : SC_MAXIMIZE);
-                if (sc == SC_CLOSE || sc == SC_MINIMIZE) WindowAnimator.SnapshotNow(target);   // the animation shows it as it is right now
+                if (sc == SC_CLOSE) WindowAnimator.CloseClicked(target);         // its picture goes up now: no gap when it vanishes
+                else if (sc == SC_MINIMIZE) WindowAnimator.SnapshotNow(target);  // the animation shows it as it is right now
                 Native.PostMessage(target, WM_SYSCOMMAND, new IntPtr(sc), IntPtr.Zero);
             };
             return g;
@@ -441,9 +443,15 @@ namespace MacLook
             }
             else
             {
+                // No caption buttons as far as Windows knows (Discord, Electron apps...): assume the usual place.
                 bw = 138 * scale; bh = 32 * scale;
                 bx = r.Right - bw; by = r.Top;
             }
+            // Apps that draw their own (often smaller) buttons: the assumed area would cover their other
+            // title bar icons. Use the measured width of their real buttons instead.
+            int width = r.Right - r.Left;
+            if (width != measuredFor) MeasureSoon((int)bx, (int)by, (int)bw, (int)bh, width);
+            if (measuredWidth > 0 && measuredWidth < bw) { bx += bw - measuredWidth; bw = measuredWidth; }
 
             // Re-check the title bar colour now and then (apps finish painting, switch themes, gain or lose focus),
             // but never mid-drag, when the pixels next to the buttons may not be the window yet.
@@ -461,7 +469,103 @@ namespace MacLook
             }
             row.HorizontalAlignment = HorizontalAlignment.Right;
             row.Margin = new Thickness(0, 0, MacButtons.RightMargin, 0);
-            Place((int)bx, (int)by, (int)Math.Max(76 * scale, bw), (int)Math.Max(20 * scale, bh));
+            double pwNew = Math.Max(76 * scale, bw);
+            Place((int)(bx + bw - pwNew), (int)by, (int)pwNew, (int)Math.Max(20 * scale, bh));
+        }
+
+        // ---- measuring the app's real caption buttons ----
+        [DllImport("user32.dll")] private static extern bool SetWindowDisplayAffinity(IntPtr h, uint affinity);
+        [DllImport("dwmapi.dll")] private static extern int DwmFlush();
+        [DllImport("user32.dll")] private static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        private const uint WM_NCHITTEST = 0x84, SMTO_ABORTIFHUNG = 0x2;
+        private const int HTMINBUTTON = 8, HTMAXBUTTON = 9, HTCLOSE = 20;
+
+        private int measuredFor = -1;      // window width the measurement belongs to
+        private double measuredWidth;      // physical px from the right edge of the caption area; 0 = use Windows' area
+        private bool measuring;
+
+        /// <summary>
+        /// Find how wide the app's minimize / maximize / close really are, on a worker thread:
+        /// 1. ask the window (apps with real caption buttons answer HTMINBUTTON / HTMAXBUTTON / HTCLOSE);
+        /// 2. otherwise it draws its own (Discord, VS Code...): look at the title bar, with our patch hidden
+        ///    from the capture, and take the three evenly spaced glyphs furthest right.
+        /// </summary>
+        private void MeasureSoon(int x, int y, int w, int h, int width)
+        {
+            if (measuring || closed) return;
+            measuring = true;
+            measuredFor = width;
+            IntPtr win = target, me = self;
+            double sc = scale;
+            var ui = Dispatcher;
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                double result = 0;
+                try { result = MeasureButtons(win, me, x, y, w, h, sc); }
+                catch (Exception ex) { Program.Log(ex); }
+                ui.BeginInvoke(new Action(() =>
+                {
+                    measuring = false;
+                    if (closed) return;
+                    if (Math.Abs(result - measuredWidth) > 1) { measuredWidth = result; Position(); }
+                }));
+            });
+        }
+
+        private static double MeasureButtons(IntPtr win, IntPtr me, int x, int y, int w, int h, double sc)
+        {
+            int midY = y + h / 2, right = x + w;
+            // 1. Real caption buttons: the leftmost point that still answers as one.
+            int left = -1;
+            for (int px = x; px < right; px += Math.Max(2, (int)(3 * sc)))
+            {
+                IntPtr hit;
+                if (SendMessageTimeout(win, WM_NCHITTEST, IntPtr.Zero, new IntPtr((midY << 16) | (px & 0xFFFF)), SMTO_ABORTIFHUNG, 60, out hit) == IntPtr.Zero) return 0;
+                int code = hit.ToInt32();
+                if (code == HTMINBUTTON || code == HTMAXBUTTON || code == HTCLOSE) { left = px; break; }
+            }
+            if (left >= 0) return Math.Max(0, right - left);
+
+            // 2. Drawn by the app: read the strip without our patch on it.
+            Pix strip;
+            try
+            {
+                SetWindowDisplayAffinity(me, 0x11);   // WDA_EXCLUDEFROMCAPTURE: our patch stays on screen, just not in the picture
+                DwmFlush();
+                strip = ScreenCapture.CaptureRegion(x, y, w, h);
+            }
+            finally { SetWindowDisplayAffinity(me, 0); }
+            if (strip == null) return 0;
+
+            // Background = the most common colour; a column has "ink" where it clearly differs from it.
+            var counts = new Dictionary<int, int>();
+            foreach (int c in strip.D) { int k = c & 0xF0F0F0; int n; counts.TryGetValue(k, out n); counts[k] = n + 1; }
+            int bg = counts.OrderByDescending(kv => kv.Value).First().Key;
+            int br = (bg >> 16) & 0xFF, bgg = (bg >> 8) & 0xFF, bb = bg & 0xFF;
+            var ink = new bool[strip.W];
+            for (int i = 0; i < strip.W; i++)
+                for (int j = strip.H / 5; j < strip.H * 4 / 5; j++)
+                {
+                    int c = strip.D[j * strip.W + i];
+                    int d = Math.Abs(((c >> 16) & 0xFF) - br) + Math.Abs(((c >> 8) & 0xFF) - bgg) + Math.Abs((c & 0xFF) - bb);
+                    if (d > 90) { ink[i] = true; break; }
+                }
+            // Glyphs = runs of inked columns (small gaps bridged); keep their centres.
+            var centres = new List<double>();
+            int gap = (int)(3 * sc), start = -1, last = -1;
+            for (int i = 0; i <= strip.W; i++)
+            {
+                bool on = i < strip.W && ink[i];
+                if (on) { if (start < 0) start = i; last = i; }
+                else if (start >= 0 && i - last > gap) { centres.Add((start + last) / 2.0); start = -1; }
+            }
+            if (centres.Count < 3) return 0;
+            double c3 = centres[centres.Count - 1], c2 = centres[centres.Count - 2], c1 = centres[centres.Count - 3];
+            double d1 = c2 - c1, d2 = c3 - c2;
+            // Evenly spaced, button-sized cells (Windows' are 46 px at 100%, custom ones ~28-48).
+            if (Math.Abs(d1 - d2) > 5 * sc || d1 < 22 * sc || d1 > 60 * sc) return 0;
+            double cell = (d1 + d2) / 2;
+            return Math.Max(0, strip.W - (c1 - cell / 2));
         }
 
         /// <summary>
@@ -510,9 +614,10 @@ namespace MacLook
             if (Native.DwmGetWindowAttribute(target, DWMWA_CAPTION_BUTTON_BOUNDS, out cb, 16) == 0 && cb.Right - cb.Left > 20)
             {
                 int by = Math.Max(wr.Top + cb.Top, r.Top);
-                Place(wr.Left + cb.Left, by, pw, ph);
+                int right = Math.Min(wr.Left + cb.Right, r.Right);
+                Place(right - pw, by, pw, ph);   // right-aligned, so a measured (narrower) patch stays put
             }
-            else Place((int)(r.Right - 138 * scale), r.Top, pw, ph);
+            else Place(r.Right - pw, r.Top, pw, ph);
         }
 
         private static readonly Color DefaultPatch = Color.FromRgb(32, 32, 32);
