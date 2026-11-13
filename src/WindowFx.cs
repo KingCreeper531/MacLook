@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 
 namespace MacLook
@@ -175,6 +176,9 @@ namespace MacLook
                     bool ok = Native.PrintWindow(h, dc, 2);   // PW_RENDERFULLCONTENT
                     g.ReleaseHdc(dc);
                     if (!ok) return null;
+                    // The picture comes straight from the app, so it still has Windows' own buttons:
+                    // paint the Mac ones over them, exactly like the live overlay does.
+                    try { PaintMacButtons(g, bmp, h); } catch (Exception ex) { Program.Log(ex); }
                 }
                 int cx = Math.Max(0, fr.Left - wr.Left), cy = Math.Max(0, fr.Top - wr.Top);
                 int cw = Math.Min(w - cx, fr.Right - fr.Left), ch = Math.Min(hh - cy, fr.Bottom - fr.Top);
@@ -197,6 +201,176 @@ namespace MacLook
         private static void PlayClose(BitmapSource img, Rect from)
         {
             new GenieOverlay(img, from, from, true).Run();
+        }
+
+        private static void PaintMacButtons(System.Drawing.Graphics g, System.Drawing.Bitmap bmp, IntPtr h)
+        {
+            if (Settings.WindowButtons != "replace") return;
+            Native.RECT cb;
+            if (Native.DwmGetWindowAttribute(h, 5, out cb, 16) != 0 || cb.Right - cb.Left < 20 || cb.Bottom - cb.Top < 10) return;
+            float s;
+            using (var sg = System.Drawing.Graphics.FromHwnd(IntPtr.Zero)) s = sg.DpiX / 96f;
+            int x = Math.Max(0, cb.Left), y = Math.Max(0, cb.Top);
+            int w = Math.Min(bmp.Width - x, cb.Right - cb.Left), hh = Math.Min(bmp.Height - y, cb.Bottom - cb.Top);
+            if (w <= 0 || hh <= 0) return;
+
+            // Title bar colour: most common of a few pixels just left of the buttons.
+            var counts = new Dictionary<int, int>();
+            foreach (int ox in new[] { 4, 16, 34 })
+                foreach (int oy in new[] { -8, 0, 8 })
+                {
+                    int px = Math.Max(0, x - (int)(ox * s)), py = Math.Max(0, Math.Min(bmp.Height - 1, y + hh / 2 + (int)(oy * s)));
+                    int c = bmp.GetPixel(px, py).ToArgb() | unchecked((int)0xFF000000);
+                    int n; counts.TryGetValue(c, out n); counts[c] = n + 1;
+                }
+            int best = counts.OrderByDescending(kv => kv.Value).First().Key;
+            using (var br = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(best)))
+                g.FillRectangle(br, x, y, w, hh);
+
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            float d = 12 * s, gap = 8 * s, right = x + w - 14 * s, top = y + hh / 2f - d / 2;
+            var colors = new[] { System.Drawing.Color.FromArgb(0xFF, 0x5F, 0x57), System.Drawing.Color.FromArgb(0xFE, 0xBC, 0x2E), System.Drawing.Color.FromArgb(0x28, 0xC8, 0x40) };
+            for (int i = 0; i < 3; i++)
+            {
+                float left = right - (3 - i) * d - (2 - i) * gap;
+                using (var br = new System.Drawing.SolidBrush(colors[i])) g.FillEllipse(br, left, top, d, d);
+            }
+        }
+
+        // ------------------------------------------------------------------ opening animation
+        private static Pix launchBg;
+        private static Rect launchFrom;
+        private static DateTime launchAt;
+        private static HashSet<IntPtr> launchKnown;
+        private static IntPtr showHook;
+        private static Native.WinEventDelegate showProc;
+
+        /// <summary>
+        /// Called just before launching an app from the Dock / Launchpad / Spotlight: remember what the
+        /// screen looks like now, so the app's first window can grow out of where you clicked.
+        /// </summary>
+        public static void ExpectLaunch(Rect from)
+        {
+            if (!Settings.AnimateWindows) return;
+            launchBg = ScreenCapture.Capture();
+            if (launchBg == null) return;
+            launchFrom = from;
+            launchAt = DateTime.Now;
+            launchKnown = new HashSet<IntPtr>(WindowTracker.Enumerate().Select(w => w.Hwnd));
+            if (showHook == IntPtr.Zero)
+            {
+                showProc = OnShow;
+                showHook = Native.SetWinEventHook(0x8002, 0x8002, IntPtr.Zero, showProc, 0, 0, WINEVENT_SKIPOWNPROCESS);
+            }
+            var at = launchAt;
+            Launcher.Later(8000, () => { if (launchAt == at) StopLaunchWatch(); });
+        }
+
+        private static void StopLaunchWatch()
+        {
+            if (showHook != IntPtr.Zero) Native.UnhookWinEvent(showHook);
+            showHook = IntPtr.Zero;
+            launchBg = null;
+        }
+
+        private static void OnShow(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+        {
+            if (idObject != 0 || launchBg == null || launchKnown == null || launchKnown.Contains(hwnd)) return;
+            if (!IsAppWindow(hwnd) || Native.IsIconic(hwnd)) return;
+            var r = Native.FrameRect(hwnd);
+            if (r.Right - r.Left < 160 || r.Bottom - r.Top < 120) return;
+            var bg = launchBg;
+            var from = launchFrom;
+            StopLaunchWatch();
+            try
+            {
+                // Cover the new window right away with what was behind it, then grow its picture from the icon.
+                var to = new Rect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+                var o = new OpenOverlay(bg, from, to);
+                o.Show();
+                IntPtr h = hwnd;
+                Launcher.Later(110, () =>
+                {
+                    Rect actual;
+                    var img = Capture(h, out actual);
+                    o.Play(img);
+                });
+            }
+            catch (Exception ex) { Program.Log(ex); }
+        }
+
+        private class OpenOverlay : Window
+        {
+            private readonly Rect from, to, area;
+            private readonly Image cover = new Image { Stretch = Stretch.Fill };
+            private readonly Image win = new Image { Stretch = Stretch.Fill, Opacity = 0 };
+            private DateTime start;
+            private double scale = 1;
+
+            public OpenOverlay(Pix bg, Rect from, Rect to)
+            {
+                this.from = from; this.to = to;
+                var u = Rect.Union(from, to);
+                u.Inflate(4, 4);
+                area = u;
+                WindowStyle = WindowStyle.None; AllowsTransparency = true; Background = Brushes.Transparent;
+                ShowInTaskbar = false; ShowActivated = false; Topmost = true; ResizeMode = ResizeMode.NoResize;
+                cover.Source = Crop(bg, to);
+                var canvas = new Canvas();
+                canvas.Children.Add(cover);
+                canvas.Children.Add(win);
+                Content = canvas;
+                SourceInitialized += (s, e) =>
+                {
+                    var h = new WindowInteropHelper(this).Handle;
+                    scale = HwndSource.FromHwnd(h).CompositionTarget.TransformToDevice.M11;
+                    long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+                    Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex | 0x20 | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
+                    Left = area.X / scale; Top = area.Y / scale; Width = area.Width / scale; Height = area.Height / scale;
+                    Canvas.SetLeft(cover, (to.X - area.X) / scale); Canvas.SetTop(cover, (to.Y - area.Y) / scale);
+                    cover.Width = to.Width / scale; cover.Height = to.Height / scale;
+                };
+            }
+
+            private static BitmapSource Crop(Pix p, Rect r)
+            {
+                int x = Math.Max(0, (int)r.X - p.X), y = Math.Max(0, (int)r.Y - p.Y);
+                int w = Math.Min(p.W - x, (int)r.Width), h = Math.Min(p.H - y, (int)r.Height);
+                if (w <= 0 || h <= 0) return null;
+                var px = new int[w * h];
+                for (int j = 0; j < h; j++) Array.Copy(p.D, (y + j) * p.W + x, px, j * w, w);
+                var bs = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgr32, null, px, w * 4);
+                bs.Freeze();
+                return bs;
+            }
+
+            public void Play(BitmapSource img)
+            {
+                if (img == null) { Finish(); return; }
+                win.Source = img;
+                start = DateTime.Now;
+                CompositionTarget.Rendering += OnFrame;
+            }
+
+            private void OnFrame(object sender, EventArgs e)
+            {
+                double p = Math.Min(1, (DateTime.Now - start).TotalMilliseconds / 300.0);
+                const double s = 1.25;   // gentle overshoot, like a spring
+                double t = p - 1, k = t * t * ((s + 1) * t + s) + 1;
+                double x = from.X + (to.X - from.X) * k, y = from.Y + (to.Y - from.Y) * k;
+                double w = from.Width + (to.Width - from.Width) * k, h = from.Height + (to.Height - from.Height) * k;
+                Canvas.SetLeft(win, (x - area.X) / scale); Canvas.SetTop(win, (y - area.Y) / scale);
+                win.Width = Math.Max(1, w / scale); win.Height = Math.Max(1, h / scale);
+                win.Opacity = Math.Min(1, p * 3);
+                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; Finish(); }
+            }
+
+            private void Finish()
+            {
+                var a = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(90));
+                a.Completed += (s, e) => Close();
+                BeginAnimation(OpacityProperty, a);
+            }
         }
 
         /// <summary>Window switcher: the chosen window grows from its card to its real size.</summary>

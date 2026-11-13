@@ -228,6 +228,7 @@ namespace MacLook
         // Launchpad
         public static string LaunchpadSort = "az";    // az | used | custom
         public static int LaunchpadIconSize = 84;
+        public static bool LaunchpadShowAll = false;     // include help files, manuals, websites and admin tools
         // Hot corners & shortcuts
         public static string HotTopLeft = "none";
         public static string HotTopRight = "none";

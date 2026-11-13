@@ -9,6 +9,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 
@@ -129,6 +130,38 @@ namespace MacLook
             t.Start();
         }
 
+        private static readonly string[] JunkExtensions = { ".chm", ".txt", ".htm", ".html", ".url", ".pdf", ".rtf", ".md", ".doc", ".docx", ".xml", ".ini", ".log", ".msc", ".cpl", ".hlp", ".bat", ".cmd", ".ps1", ".vbs" };
+        private static readonly string[] JunkWords =
+        {
+            "uninstall", "readme", "read me", "help", "documentation", "manual", "website", "web site", "faq", "release notes",
+            "license", "changelog", "sample", "install additional tools", "module docs", "tools for", "developer command prompt",
+            "developer powershell", "debuggable", "app cert kit", "application verifier", "gpuview", "online documentation", "pydoc"
+        };
+        private static readonly string[] SystemTools =
+        {
+            "component services", "computer management", "event viewer", "iscsi initiator", "odbc data sources", "performance monitor",
+            "print management", "local security policy", "resource monitor", "services", "system configuration", "system information",
+            "task scheduler", "registry editor", "recovery drive", "defragment and optimize drives", "disk cleanup", "windows memory diagnostic",
+            "steps recorder", "character map", "windows tools", "windows media player legacy", "hyper-v manager", "hyper-v quick create",
+            "msix packaging tool", "windows fax and scan", "windows powershell ise", "windows powershell (x86)", "windows powershell ise (x86)",
+            "odbc data sources (32-bit)", "odbc data sources (64-bit)", "math input panel", "xps viewer", "quick assist", "run"
+        };
+
+        /// <summary>
+        /// Launchpad shows real apps only: no help files, manuals, websites, uninstallers or admin consoles.
+        /// (They are still searchable in Spotlight.)
+        /// </summary>
+        public static bool IsRealApp(AppEntry a)
+        {
+            if (a.Custom) return true;
+            string name = a.Name.ToLowerInvariant().Trim();
+            string path = a.Path.ToLowerInvariant();
+            foreach (var ext in JunkExtensions) if (path.EndsWith(ext)) return false;
+            foreach (var w in JunkWords) if (name.Contains(w)) return false;
+            foreach (var t in SystemTools) if (name == t) return false;
+            if (name.StartsWith("python ") && (name.Contains("manual") || name.Contains("docs"))) return false;
+            return true;
+        }
         public static int Score(string name, string q)
         {
             if (q.Length == 0) return 1;
@@ -148,13 +181,20 @@ namespace MacLook
             LaunchpadPrefs.Uses.TryGetValue(a.Id, out n);
             LaunchpadPrefs.Uses[a.Id] = n + 1;
             LaunchpadPrefs.Save();
-            Launcher.Open(a.Key);
+            // Let Launchpad / Spotlight finish fading so they are not in the "before" picture.
+            bool overlayUp = (Program.Launchpad != null && Program.Launchpad.IsVisible) || (Program.Spotlight != null && Program.Spotlight.IsVisible);
+            Launcher.Later(overlayUp ? 230 : 1, () =>
+            {
+                var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+                WindowAnimator.ExpectLaunch(new Rect(b.Left + b.Width / 2.0 - 60, b.Top + b.Height / 2.0 - 60, 120, 120));
+                Launcher.Open(a.Key);
+            });
         }
 
         /// <summary>Visible apps in Launchpad order: pinned first, then by the chosen sort.</summary>
         public static void Arrange(out List<AppEntry> pinned, out List<AppEntry> rest)
         {
-            var all = All.Where(a => !LaunchpadPrefs.Hidden.Contains(a.Id)).ToList();
+            var all = All.Where(a => !LaunchpadPrefs.Hidden.Contains(a.Id) && (Settings.LaunchpadShowAll || IsRealApp(a))).ToList();
             var byId = new Dictionary<string, AppEntry>();
             foreach (var a in all) byId[a.Id] = a;
             pinned = LaunchpadPrefs.Pinned.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
@@ -192,6 +232,7 @@ namespace MacLook
         private List<AppEntry> visible = new List<AppEntry>();
         private DateTime lastHidden;
         private bool closing;
+        private readonly Image backdrop;
 
         // drag to rearrange
         private AppEntry pressed;
@@ -204,7 +245,6 @@ namespace MacLook
         {
             Title = "Launchpad";
             WindowStyle = WindowStyle.None;
-            AllowsTransparency = true;
             ResizeMode = ResizeMode.NoResize;
             ShowInTaskbar = false;
             Topmost = true;
@@ -213,6 +253,8 @@ namespace MacLook
             Foreground = Brushes.White;
 
             root = new Grid { Background = Brushes.Transparent };
+            backdrop = new Image { Stretch = Stretch.Fill, IsHitTestVisible = false };
+            root.Children.Add(backdrop);
             content = new Grid();
             content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             content.RowDefinitions.Add(new RowDefinition());
@@ -302,19 +344,38 @@ namespace MacLook
 
         private void Open()
         {
+            // The window starts as an exact copy of the screen, then the frosted version fades in over it:
+            // it looks like the desktop blurring away, and a normal (non-transparent) window draws much faster.
             var snap = ScreenCapture.Capture();
-            var backdrop = GlassFx.Backdrop(snap, 6, 6, 0.32);
-            Background = backdrop != null ? (Brush)new ImageBrush(backdrop) { Stretch = Stretch.Fill } : new SolidColorBrush(Color.FromArgb(255, 30, 30, 34));
+            if (snap != null)
+            {
+                var raw = BitmapSource.Create(snap.W, snap.H, 96, 96, PixelFormats.Bgr32, null, snap.D, snap.W * 4);
+                raw.Freeze();
+                Background = new ImageBrush(raw) { Stretch = Stretch.Fill };
+            }
+            else Background = new SolidColorBrush(Color.FromRgb(30, 30, 34));
+            // Blur on a background thread so Launchpad appears instantly; the frost fades in as soon as it is ready.
+            backdrop.Source = null;
+            backdrop.Opacity = 0;
+            var pix = snap;
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                BitmapSource blurred = null;
+                try { blurred = GlassFx.Backdrop(pix, 6, 6, 0.32); } catch (Exception ex) { Program.Log(ex); }
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (!IsVisible || closing || blurred == null) return;
+                    backdrop.Source = blurred;
+                    backdrop.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
+                }));
+            });
             Left = 0; Top = 0;
             Width = SystemParameters.PrimaryScreenWidth;
             Height = SystemParameters.PrimaryScreenHeight;
             search.Text = "";
             Filter();
             closing = false;
-            BeginAnimation(OpacityProperty, null);
-            Opacity = 0;
             Show();
-            BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200)));
             Activate();
             Native.SetForegroundWindow(new WindowInteropHelper(this).Handle);
             search.Focus();
@@ -339,13 +400,15 @@ namespace MacLook
             if (!IsVisible || closing) return;
             lastHidden = DateTime.Now;
             closing = true;
-            var dur = TimeSpan.FromMilliseconds(180);
+            var dur = TimeSpan.FromMilliseconds(160);
             var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
             var st = new ScaleTransform(1, 1);
             content.RenderTransformOrigin = new Point(0.5, 0.5);
             content.RenderTransform = st;
             st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 1.06, dur) { EasingFunction = ease });
             st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 1.06, dur) { EasingFunction = ease });
+            content.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0, dur) { EasingFunction = ease });
+            // Fade the frost away to reveal the plain screen copy, which matches what is really underneath.
             var fade = new DoubleAnimation(1, 0, dur) { EasingFunction = ease };
             fade.Completed += (s, e) =>
             {
@@ -353,8 +416,9 @@ namespace MacLook
                 closing = false;
                 Hide();
                 Background = Brushes.Black;
+                backdrop.Source = null;
             };
-            BeginAnimation(OpacityProperty, fade);
+            backdrop.BeginAnimation(OpacityProperty, fade);
         }
 
         public void Refresh() { if (IsVisible) Filter(); }
@@ -367,7 +431,7 @@ namespace MacLook
             if (q.Length > 0)
             {
                 visible = AppCatalog.All
-                    .Where(a => !LaunchpadPrefs.Hidden.Contains(a.Id))
+                    .Where(a => !LaunchpadPrefs.Hidden.Contains(a.Id) && (Settings.LaunchpadShowAll || AppCatalog.IsRealApp(a)))
                     .Select(a => new { a, s = AppCatalog.Score(AppCatalog.DisplayName(a), q) })
                     .Where(x => x.s > 0)
                     .OrderByDescending(x => x.s).ThenBy(x => AppCatalog.DisplayName(x.a), StringComparer.OrdinalIgnoreCase)

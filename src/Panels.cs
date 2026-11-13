@@ -78,21 +78,25 @@ namespace MacLook
             closing = false;
             OnOpening();
             if (IsVisible) Hide();
-            Snapshot = ScreenCapture.Capture();
             BeginAnimation(OpacityProperty, null);
             Opacity = 0;
             Show();
             Activate();
             Native.SetForegroundWindow(new WindowInteropHelper(this).Handle);
             OnShown();
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                UpdateLayout();
-                Place();
-                UpdateLayout();
-                foreach (var p in parts) GlassFx.Apply(p.Key, Snapshot, p.Value);
-                Entrance();
-            }), DispatcherPriority.Loaded);
+            // Lay out and place while still invisible, then photograph only the area behind the panel
+            // (a fully transparent window isn't in the picture). Much faster than the whole screen.
+            UpdateLayout();
+            Place();
+            UpdateLayout();
+            var src = PresentationSource.FromVisual(this);
+            double s = src == null ? 1 : src.CompositionTarget.TransformToDevice.M11;
+            int x = (int)(Left * s), y = (int)(Top * s), w = (int)(ActualWidth * s), h = (int)(ActualHeight * s);
+            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+            int capH = Math.Min(b.Bottom - Math.Max(b.Top, y), h + (int)(700 * s));   // room to grow (e.g. Spotlight results)
+            Snapshot = ScreenCapture.CaptureRegion(Math.Max(b.Left, x), Math.Max(b.Top, y), Math.Max(1, Math.Min(w, b.Right - x)), Math.Max(1, capH)) ?? ScreenCapture.Capture();
+            foreach (var p in parts) GlassFx.Apply(p.Key, Snapshot, p.Value);
+            Entrance();
         }
 
         private bool closing;
@@ -103,7 +107,7 @@ namespace MacLook
             if (!IsVisible || closing) return;
             lastHidden = DateTime.Now;
             closing = true;
-            var dur = TimeSpan.FromMilliseconds(150);
+            var dur = TimeSpan.FromMilliseconds(110);
             var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
             var fe = Content as FrameworkElement;
             if (fe != null)
@@ -128,25 +132,22 @@ namespace MacLook
         /// <summary>Blur-in + springy scale, in the spirit of React Bits' BlurText / spring entrances.</summary>
         private void Entrance()
         {
-            BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(170)));
+            // Quick and light: a short fade with a small springy drop (no blur effect, which is slow to render).
+            BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(110)));
             var fe = Content as FrameworkElement;
             if (fe == null) return;
-            var st = new ScaleTransform(0.94, 0.94);
-            var drop = new TranslateTransform(0, -12);
+            var st = new ScaleTransform(0.96, 0.96);
+            var drop = new TranslateTransform(0, -8);
             var group = new TransformGroup();
             group.Children.Add(st);
             group.Children.Add(drop);
             fe.RenderTransformOrigin = new Point(0.5, 0);
             fe.RenderTransform = group;
-            drop.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(-12, 0, TimeSpan.FromMilliseconds(260)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
-            var ease = new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut };
-            st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.94, 1, TimeSpan.FromMilliseconds(260)) { EasingFunction = ease });
-            st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.94, 1, TimeSpan.FromMilliseconds(260)) { EasingFunction = ease });
-            var blur = new BlurEffect { Radius = 10 };
-            fe.Effect = blur;
-            var ba = new DoubleAnimation(10, 0, TimeSpan.FromMilliseconds(200));
-            ba.Completed += (s, e) => fe.Effect = null;
-            blur.BeginAnimation(BlurEffect.RadiusProperty, ba);
+            var ease = new BackEase { Amplitude = 0.3, EasingMode = EasingMode.EaseOut };
+            var dur = TimeSpan.FromMilliseconds(190);
+            drop.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(-8, 0, dur) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+            st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.96, 1, dur) { EasingFunction = ease });
+            st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.96, 1, dur) { EasingFunction = ease });
         }
 
         // ---- small building blocks shared by panels ----

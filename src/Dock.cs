@@ -57,7 +57,7 @@ namespace MacLook
         private string downloads;
         private bool trashFull;
 
-        private bool hovering, animating, menuOpen;
+        private bool hovering, animating, menuOpen, glassPending;
         private double mouseX;
         private DockItem hovered;
 
@@ -103,7 +103,7 @@ namespace MacLook
             };
             bg = new Border { VerticalAlignment = VerticalAlignment.Bottom, UseLayoutRounding = true };
             bg.SetResourceReference(Border.BackgroundProperty, "DockBg");
-            bg.SizeChanged += (s, e) => ApplyGlass();
+            bg.SizeChanged += (s, e) => { if (animating) glassPending = true; else ApplyGlass(); };
             IsVisibleChanged += (s, e) => { if (IsVisible) Dispatcher.BeginInvoke(new Action(ApplyGlass), DispatcherPriority.Loaded); };
             shadow = new Border
             {
@@ -627,6 +627,8 @@ namespace MacLook
             {
                 CompositionTarget.Rendering -= OnFrame;
                 animating = false;
+                // While magnifying, the glass just stretches; refresh it properly once things settle.
+                if (glassPending) { glassPending = false; ApplyGlass(); }
             }
         }
 
@@ -731,6 +733,15 @@ namespace MacLook
                 return;
             }
             if (!it.IsFolder && !it.IsBuiltin && Settings.BounceOnLaunch) Bounce(it);
+            if (!it.IsFolder && !it.IsBuiltin)
+            {
+                try
+                {
+                    var p0 = it.Img.PointToScreen(new Point(0, 0));
+                    WindowAnimator.ExpectLaunch(new Rect(p0.X, p0.Y, it.Img.ActualWidth * scale, it.Img.ActualHeight * scale));
+                }
+                catch { }
+            }
             Launcher.Open(it.LaunchTarget, it.Args);
         }
 

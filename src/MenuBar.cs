@@ -9,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 
@@ -426,6 +427,16 @@ namespace MacLook
             Width = b.Width / scale;
             Height = BarHeight;
             AppBar.Set(hwnd, Native.ABE_TOP, (int)Math.Round(BarHeight * scale));
+        }
+
+        /// <summary>Startup: the menu bar slides down into place.</summary>
+        public void Intro()
+        {
+            var t = new TranslateTransform(0, -BarHeight);
+            barGlass.RenderTransform = t;
+            var a = new DoubleAnimation(-BarHeight, 0, TimeSpan.FromMilliseconds(420)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+            a.Completed += (s, e) => barGlass.RenderTransform = null;
+            t.BeginAnimation(TranslateTransform.YProperty, a);
         }
 
         private const int ShotHotkey = 0x4E30, ForceQuitHotkey = 0x4E33;

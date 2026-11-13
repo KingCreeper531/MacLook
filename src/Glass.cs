@@ -228,7 +228,13 @@ namespace MacLook
         /// <summary>Snapshot the screen before a context menu opens, then paint its glass once it has a position.</summary>
         public static void PrepareMenu(ContextMenu menu)
         {
-            var snap = ScreenCapture.Capture();
+            // Only the area around the pointer, where the menu will appear: far quicker than the whole screen.
+            Native.POINT p;
+            Native.GetCursorPos(out p);
+            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+            int w = Math.Min(b.Width, 1100), h = Math.Min(b.Height, 1300);
+            int x = Math.Max(b.Left, Math.Min(b.Right - w, p.X - w / 2)), y = Math.Max(b.Top, Math.Min(b.Bottom - h, p.Y - h / 2));
+            var snap = ScreenCapture.CaptureRegion(x, y, w, h);
             if (snap == null) return;
             menu.Opened += (s, e) => menu.Dispatcher.BeginInvoke(new Action(() =>
             {

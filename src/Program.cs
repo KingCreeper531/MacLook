@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
@@ -10,8 +11,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.4.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.4.1.0")]
+[assembly: System.Reflection.AssemblyVersion("2.4.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.4.2.0")]
 
 namespace MacLook
 {
@@ -111,6 +112,7 @@ namespace MacLook
             {
                 Desktop = ScreenCapture.Capture();
                 MenuBar.Show();
+                MenuBar.Intro();
                 Dock.Show();
                 started = true;
                 AppCatalog.Load();
@@ -219,10 +221,16 @@ namespace MacLook
             Native.GetCursorPos(out orig);
             var steps = new Action[]
             {
-                () => SaveButtons("1-window-buttons"),
-                () => Switcher.Open(false), () => { }, () => SaveCenter("2-switcher"), () => Switcher.Next(), () => SaveCenter("3-switcher-next"), () => Switcher.Cancel(),
+                () => { },
+                () =>
+                {
+                    var all = AppCatalog.All;
+                    var kept = all.Where(AppCatalog.IsRealApp).ToList();
+                    Log("LAUNCHPAD kept " + kept.Count + " of " + all.Count);
+                    Log("LAUNCHPAD hidden: " + string.Join(" | ", all.Where(a => !AppCatalog.IsRealApp(a)).Select(a => a.Name).ToArray()));
+                },
                 Quit
-            };       int i = 0;
+            };     int i = 0;
             Action next = null;
             next = () =>
             {

@@ -694,6 +694,7 @@ namespace MacLook
                 Row("Arrange apps", "Drag apps in Launchpad to put them in your own order.",
                     Segmented(new[] { "A–Z", "Most Used", "My Order" }, new[] { "az", "used", "custom" }, Settings.LaunchpadSort, v => Settings.LaunchpadSort = v)),
                 Row("Icon size", null, Slider(56, 128, Settings.LaunchpadIconSize, "0", v => Settings.LaunchpadIconSize = (int)Math.Round(v))),
+                Row("Show system tools and documents", "Help files, manuals, websites, uninstallers and admin tools. Off keeps Launchpad to real apps (Spotlight still finds everything).", Toggle(Settings.LaunchpadShowAll, v => Settings.LaunchpadShowAll = v)),
                 Row("Windows key opens Launchpad", "Shortcuts like Win+E and Win+D keep working.", Toggle(Settings.WinKeyLaunchpad, v => Settings.WinKeyLaunchpad = v))));
             page.Children.Add(Group(
                 Row("Tips", "Right-click an app in Launchpad to pin it to the top, rename it, change its icon, add it to the Dock or hide it. Drag apps to move them.", null),

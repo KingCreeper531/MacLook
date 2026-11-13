@@ -85,11 +85,18 @@ namespace MacLook
         {
             if (target == IntPtr.Zero) return;
             Native.PostMessage(target, 0x0112, new IntPtr(sc), IntPtr.Zero);   // WM_SYSCOMMAND
-            if (sc != SC_MAXIMIZE && sc != SC_RESTORE) Hide();
+            // Minimize: the window leaves at once. Close: stay put until the window is really gone
+            // (it may ask to save first), so Windows' own buttons never peek out.
+            if (sc == SC_MINIMIZE) Hide();
         }
+
+        private System.Windows.Threading.DispatcherTimer watch;
 
         public void Start()
         {
+            watch = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            watch.Tick += (s, e) => Watch();
+            watch.Start();
             proc = OnEvent;
             fgHook = Native.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZESTART, IntPtr.Zero, proc, 0, 0, 2);
             Follow(Native.GetForegroundWindow());
@@ -97,6 +104,7 @@ namespace MacLook
 
         public void Stop()
         {
+            if (watch != null) watch.Stop();
             if (fgHook != IntPtr.Zero) Native.UnhookWinEvent(fgHook);
             if (moveHook != IntPtr.Zero) Native.UnhookWinEvent(moveHook);
             fgHook = moveHook = IntPtr.Zero;
@@ -113,11 +121,12 @@ namespace MacLook
             else if (ev == EVENT_SYSTEM_MINIMIZESTART && h == target) Hide();
             else if (ev == EVENT_OBJECT_LOCATIONCHANGE && h == target) Position();
             else if (ev == EVENT_OBJECT_DESTROY && h == target) { target = IntPtr.Zero; Hide(); }
+            else if (ev == 0x8003 && h == target) { target = IntPtr.Zero; Hide(); }   // EVENT_OBJECT_HIDE: closed
         }
 
         private void Follow(IntPtr h)
         {
-            if (h == hwnd) return;
+            if (h == hwnd || (h != IntPtr.Zero && WindowTracker.IsOwn(h) && target != IntPtr.Zero)) return;
             if (moveHook != IntPtr.Zero) { Native.UnhookWinEvent(moveHook); moveHook = IntPtr.Zero; }
             target = IntPtr.Zero;
             if (Settings.WindowButtons == "off" || h == IntPtr.Zero || Program.IsFullscreen || !Eligible(h)) { Hide(); return; }
@@ -188,16 +197,46 @@ namespace MacLook
             if (!IsVisible) Show();
         }
 
-        private static Color SampleTitleBar(int x, int y)
+        /// <summary>
+        /// The title bar's colour: nine samples to the left of the buttons, and the most common one wins
+        /// (so an icon or a hover highlight next to the buttons can't throw it off).
+        /// </summary>
+        private Color SampleTitleBar(int x, int y)
         {
             IntPtr dc = GetDC(IntPtr.Zero);
             try
             {
-                uint c = GetPixel(dc, x, y);
-                if (c == 0xFFFFFFFF) return Color.FromRgb(32, 32, 32);
-                return Color.FromRgb((byte)(c & 0xFF), (byte)((c >> 8) & 0xFF), (byte)((c >> 16) & 0xFF));
+                var counts = new System.Collections.Generic.Dictionary<uint, int>();
+                int[] dx = { 4, 16, 34 };
+                int[] dy = { -8, 0, 8 };
+                foreach (int ox in dx)
+                    foreach (int oy in dy)
+                    {
+                        uint c = GetPixel(dc, x - (int)(ox * scale), y + (int)(oy * scale)) & 0xFFFFFF;
+                        if (c == 0xFFFFFF && GetPixel(dc, x, y) == 0xFFFFFFFF) continue;
+                        int n;
+                        counts.TryGetValue(c, out n);
+                        counts[c] = n + 1;
+                    }
+                if (counts.Count == 0) return Color.FromRgb(32, 32, 32);
+                uint best = 0; int bestN = -1;
+                foreach (var kv in counts) if (kv.Value > bestN) { best = kv.Key; bestN = kv.Value; }
+                return Color.FromRgb((byte)(best & 0xFF), (byte)((best >> 8) & 0xFF), (byte)((best >> 16) & 0xFF));
             }
             finally { ReleaseDC(IntPtr.Zero, dc); }
+        }
+
+        /// <summary>
+        /// Safety net: some windows (new windows, the screenshot tool, menus) don't send the events we
+        /// listen for, so every quarter second make sure we're on the right window and still on top.
+        /// </summary>
+        private void Watch()
+        {
+            if (Settings.WindowButtons == "off") { if (IsVisible) Hide(); return; }
+            IntPtr fg = Native.GetForegroundWindow();
+            if (fg != IntPtr.Zero && fg != hwnd && fg != target && !WindowTracker.IsOwn(fg)) { Follow(fg); return; }
+            if (target != IntPtr.Zero) Position();
+            if (IsVisible) Native.SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);   // stay topmost, no move/size/activate
         }
     }
 }
