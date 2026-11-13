@@ -33,12 +33,16 @@ namespace MacLook
         [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr h);
         [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr h, IntPtr dc);
 
+        private const string IID_IShellItem = "43826d1e-e718-42ee-bc55-a1e261c37bfe";
+        private const int SIIGBF_RESIZETOFIT = 0x0, SIIGBF_BIGGERSIZEOK = 0x1, SIIGBF_ICONONLY = 0x4;
+        private const uint DIB_RGB_COLORS = 0;
+
         private static readonly Dictionary<string, BitmapSource> cache = new Dictionary<string, BitmapSource>();
 
         public static bool Exists(string path)
         {
             object o = null;
-            Guid iid = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+            Guid iid = new Guid(IID_IShellItem);
             int hr;
             try { hr = SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out o); }
             catch { return false; }
@@ -52,8 +56,8 @@ namespace MacLook
             string key = path.ToLowerInvariant() + "|" + size;
             BitmapSource bs;
             if (!refresh && cache.TryGetValue(key, out bs)) return bs;
-            bs = Load(path, size, 0x4 | 0x1);           // ICONONLY | BIGGERSIZEOK
-            if (bs == null) bs = Load(path, size, 0x0);
+            bs = Load(path, size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK);
+            if (bs == null) bs = Load(path, size, SIIGBF_RESIZETOFIT);   // thumbnail, for items without an icon
             cache[key] = bs;
             return bs;
         }
@@ -63,7 +67,7 @@ namespace MacLook
             object o = null;
             try
             {
-                Guid iid = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+                Guid iid = new Guid(IID_IShellItem);
                 if (SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out o) != 0 || o == null) return null;
                 var factory = (IShellItemImageFactory)o;
                 IntPtr hbm;
@@ -71,14 +75,14 @@ namespace MacLook
                 try { return FromHBitmap(hbm); }
                 finally { DeleteObject(hbm); }
             }
-            catch { return null; }
+            catch (Exception ex) { Program.Log("Icon for " + path + ": " + ex.Message); return null; }
             finally { if (o != null) Marshal.ReleaseComObject(o); }
         }
 
         private static BitmapSource FromHBitmap(IntPtr hbm)
         {
             BITMAP bm;
-            GetObject(hbm, Marshal.SizeOf(typeof(BITMAP)), out bm);
+            if (GetObject(hbm, Marshal.SizeOf(typeof(BITMAP)), out bm) == 0) return null;
             int w = bm.bmWidth, h = Math.Abs(bm.bmHeight);
             if (w <= 0 || h <= 0) return null;
             var bi = new BITMAPINFOHEADER
@@ -88,8 +92,10 @@ namespace MacLook
             };
             var px = new byte[w * h * 4];
             IntPtr dc = GetDC(IntPtr.Zero);
-            try { GetDIBits(dc, hbm, 0, (uint)h, px, ref bi, 0); }
+            int lines;
+            try { lines = GetDIBits(dc, hbm, 0, (uint)h, px, ref bi, DIB_RGB_COLORS); }
             finally { ReleaseDC(IntPtr.Zero, dc); }
+            if (lines == 0) return null;
 
             bool hasAlpha = false;
             for (int i = 3; i < px.Length; i += 4) if (px[i] != 0) { hasAlpha = true; break; }

@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace MacLook
 {
@@ -21,14 +22,29 @@ namespace MacLook
         public static Version Current { get { return Assembly.GetExecutingAssembly().GetName().Version; } }
         public static string CurrentText { get { var v = Current; return v.Major + "." + v.Minor + "." + v.Build; } }
 
+        private const string UserAgent = "MacLook-Updater";
+        private const long MinExeBytes = 50000;   // anything smaller is an error page, not Mac Look
+
         private static bool busy;
-        private static System.Windows.Threading.DispatcherTimer timer;
+        private static DispatcherTimer timer;
+
+        /// <summary>Adds TLS 1.2 (GitHub requires it) without switching off newer protocols the system allows.</summary>
+        private static void EnableTls12()
+        {
+            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
+        }
+
+        /// <summary>Runs the result back on the UI thread, unless the app is already shutting down.</summary>
+        private static void OnUi(Dispatcher ui, Action a)
+        {
+            if (ui != null && !ui.HasShutdownStarted) ui.BeginInvoke(a);
+        }
 
         /// <summary>Check shortly after startup and then every 6 hours.</summary>
         public static void Start()
         {
             Launcher.Later(20000, () => Check(false));
-            timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromHours(6) };
+            timer = new DispatcherTimer { Interval = TimeSpan.FromHours(6) };
             timer.Tick += (s, e) => Check(false);
             timer.Start();
         }
@@ -39,12 +55,13 @@ namespace MacLook
             if (busy) return;
             if (!manual && !Settings.AutoUpdate) return;
             busy = true;
+            var ui = Application.Current.Dispatcher;   // captured here: Application.Current is not for worker threads
             var t = new Thread(() =>
             {
                 string tag = null, url = null, error = null;
                 try { Latest(out tag, out url); }
                 catch (Exception ex) { error = ex.Message; }
-                Application.Current.Dispatcher.BeginInvoke(new Action(() => OnChecked(manual, tag, url, error)));
+                OnUi(ui, () => OnChecked(manual, tag, url, error));
             });
             t.IsBackground = true;
             t.Start();
@@ -52,10 +69,10 @@ namespace MacLook
 
         private static void Latest(out string tag, out string url)
         {
-            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2
+            EnableTls12();
             using (var wc = new WebClient())
             {
-                wc.Headers[HttpRequestHeader.UserAgent] = "MacLook-Updater";
+                wc.Headers[HttpRequestHeader.UserAgent] = UserAgent;
                 wc.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
                 string json = wc.DownloadString("https://api.github.com/repos/" + Repo + "/releases/latest");
                 var m = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
@@ -70,7 +87,10 @@ namespace MacLook
             if (tag == null) return null;
             var m = Regex.Match(tag, @"(\d+)\.(\d+)(?:\.(\d+))?");
             if (!m.Success) return null;
-            return new Version(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : 0, 0);
+            int major, minor, build = 0;
+            if (!int.TryParse(m.Groups[1].Value, out major) || !int.TryParse(m.Groups[2].Value, out minor)) return null;
+            if (m.Groups[3].Success && !int.TryParse(m.Groups[3].Value, out build)) return null;
+            return new Version(major, minor, build, 0);
         }
 
         private static void OnChecked(bool manual, string tag, string url, string error)
@@ -90,12 +110,14 @@ namespace MacLook
             }
             if (manual && MessageBox.Show("Mac Look " + tag.TrimStart('v') + " is available (you have " + CurrentText + ").\n\nUpdate and restart now?",
                     "Mac Look", MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
-            Download(url, tag);
+            // The file name comes from the parsed version, never the raw tag (tags may contain / or other characters).
+            Download(url, latest.ToString(3));
         }
 
-        private static void Download(string url, string tag)
+        private static void Download(string url, string version)
         {
             busy = true;
+            var ui = Application.Current.Dispatcher;
             var t = new Thread(() =>
             {
                 string file = null, error = null;
@@ -103,41 +125,79 @@ namespace MacLook
                 {
                     string dir = Path.Combine(Config.Dir, "update");
                     Directory.CreateDirectory(dir);
-                    file = Path.Combine(dir, "MacLook-" + tag + ".exe");
-                    ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+                    file = Path.Combine(dir, "MacLook-" + version + ".exe");
+                    // Download to a temporary name and only rename a complete file into place,
+                    // so a dropped connection can never leave a truncated exe that gets installed.
+                    string part = file + ".part";
+                    if (File.Exists(part)) File.Delete(part);
+                    EnableTls12();
+                    long expected = -1;
                     using (var wc = new WebClient())
                     {
-                        wc.Headers[HttpRequestHeader.UserAgent] = "MacLook-Updater";
-                        wc.DownloadFile(url, file);
+                        wc.Headers[HttpRequestHeader.UserAgent] = UserAgent;
+                        wc.DownloadFile(url, part);
+                        long len;
+                        string cl = wc.ResponseHeaders == null ? null : wc.ResponseHeaders[HttpResponseHeader.ContentLength];
+                        if (cl != null && long.TryParse(cl, out len)) expected = len;
                     }
-                    if (new FileInfo(file).Length < 50000) throw new Exception("The downloaded file looks incomplete.");
+                    long got = new FileInfo(part).Length;
+                    if (got < MinExeBytes || (expected >= 0 && got != expected))
+                    {
+                        try { File.Delete(part); } catch { }
+                        throw new Exception("The downloaded file looks incomplete.");
+                    }
+                    if (File.Exists(file)) File.Delete(file);
+                    File.Move(part, file);
                 }
                 catch (Exception ex) { error = ex.Message; }
-                Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                OnUi(ui, () =>
                 {
                     busy = false;
                     if (error != null) { Program.Log("Update failed: " + error); return; }
                     Install(file);
-                }));
+                });
             });
             t.IsBackground = true;
             t.Start();
         }
 
-        /// <summary>A tiny script waits for Mac Look to exit, replaces the exe, and starts the new one.</summary>
+        /// <summary>
+        /// A tiny script waits for Mac Look to exit, replaces the exe (retrying while the old file is still
+        /// locked), and starts Mac Look again. The paths travel as environment variables, not inside the script:
+        /// cmd reads .cmd files in the OEM code page, which would mangle non-ASCII user names, and
+        /// % or ^ in a path would be interpreted.
+        /// </summary>
         private static void Install(string newExe)
         {
-            string exe = Process.GetCurrentProcess().MainModule.FileName;
-            int pid = Process.GetCurrentProcess().Id;
-            string script = Path.Combine(Config.Dir, "update", "apply-update.cmd");
-            File.WriteAllText(script,
-                "@echo off\r\n" +
-                ":wait\r\n" +
-                "tasklist /FI \"PID eq " + pid + "\" | find \"" + pid + "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n" +
-                "copy /Y \"" + newExe + "\" \"" + exe + "\" >nul\r\n" +
-                "start \"\" \"" + exe + "\"\r\n" +
-                "del \"" + newExe + "\" >nul 2>&1\r\n");
-            Process.Start(new ProcessStartInfo("cmd.exe", "/c \"" + script + "\"") { CreateNoWindow = true, UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+            try
+            {
+                string exe;
+                int pid;
+                using (var self = Process.GetCurrentProcess()) { exe = self.MainModule.FileName; pid = self.Id; }
+                string script = Path.Combine(Config.Dir, "update", "apply-update.cmd");
+                File.WriteAllText(script,
+                    "@echo off\r\n" +
+                    ":wait\r\n" +
+                    "tasklist /FI \"PID eq " + pid + "\" | find \"" + pid + "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n" +
+                    "set tries=0\r\n" +
+                    ":copy\r\n" +
+                    "copy /Y \"%MACLOOK_NEW%\" \"%MACLOOK_EXE%\" >nul && (del \"%MACLOOK_NEW%\" >nul 2>&1 & goto run)\r\n" +
+                    "set /a tries+=1\r\n" +
+                    "if %tries% lss 10 (timeout /t 1 /nobreak >nul & goto copy)\r\n" +
+                    ":run\r\n" +
+                    "start \"\" \"%MACLOOK_EXE%\"\r\n");
+                var psi = new ProcessStartInfo("cmd.exe", "/c \"" + script + "\"") { CreateNoWindow = true, UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden };
+                psi.EnvironmentVariables["MACLOOK_NEW"] = newExe;
+                psi.EnvironmentVariables["MACLOOK_EXE"] = exe;
+                psi.WorkingDirectory = Path.GetTempPath();
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                // Don't quit if the swap can't even be scheduled: the user would be left with no Mac Look running.
+                Program.Log("Update failed: " + ex);
+                return;
+            }
             Program.Log("Updating to " + newExe);
             Program.Quit();
         }

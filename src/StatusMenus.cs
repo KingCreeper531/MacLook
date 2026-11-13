@@ -90,20 +90,23 @@ namespace MacLook
             return b;
         }
 
+        /// <summary>Run a console tool and return its output ("" on failure). Blocks, so call it off the UI thread.</summary>
         protected static string Run(string exe, string args)
         {
             try
             {
-                var p = Process.Start(new ProcessStartInfo(exe, args)
+                using (var p = Process.Start(new ProcessStartInfo(exe, args)
                 {
                     UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true,
                     StandardOutputEncoding = System.Text.Encoding.UTF8
-                });
-                string o = p.StandardOutput.ReadToEnd();
-                p.WaitForExit(5000);
-                return o;
+                }))
+                {
+                    string o = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(5000);
+                    return o ?? "";
+                }
             }
-            catch { return ""; }
+            catch (Exception ex) { Program.Log(ex); return ""; }
         }
     }
 
@@ -118,7 +121,7 @@ namespace MacLook
             body.Children.Clear();
             var eth = EthernetName();
             body.Children.Add(Header("Wi-Fi"));
-            var status = new TextBlock { Text = "Looking for networks…", Opacity = 0.6, Margin = new Thickness(10, 2, 10, 6) };
+            var status = Note("Looking for networks…");
             body.Children.Add(status);
             if (eth != null)
             {
@@ -149,7 +152,7 @@ namespace MacLook
             body.Children.Remove(status);
             if (iface.IndexOf("There is no wireless interface", StringComparison.OrdinalIgnoreCase) >= 0 || iface.Trim().Length == 0)
             {
-                body.Children.Insert(at, new TextBlock { Text = "Wi-Fi isn't available on this PC.", Opacity = 0.6, Margin = new Thickness(10, 2, 10, 6) });
+                body.Children.Insert(at, Note("Wi-Fi isn't available on this PC."));
                 return;
             }
             string current = null;
@@ -179,7 +182,7 @@ namespace MacLook
                 body.Children.Insert(at++, Header("Other Networks"));
             }
             if (list.Count(n => n.Ssid != current) == 0)
-                body.Children.Insert(at++, new TextBlock { Text = "No other networks found.", Opacity = 0.6, Margin = new Thickness(10, 2, 10, 6) });
+                body.Children.Insert(at++, Note("No other networks found."));
             foreach (var n in list.Where(n => n.Ssid != current))
             {
                 string ssid = n.Ssid;
@@ -189,10 +192,21 @@ namespace MacLook
                 body.Children.Insert(at++, Row(bubble, ssid, n.Secure ? "" : null, () =>
                 {
                     // Known networks connect directly; new ones open Windows' own password prompt.
-                    if (isKnown) Run("netsh", "wlan connect name=\"" + ssid.Replace("\"", "") + "\"");
+                    if (isKnown) RunInBackground("netsh", "wlan connect name=\"" + ssid.Replace("\"", "") + "\"");
                     else Launcher.Open("ms-availablenetworks:");
                 }));
             }
+        }
+
+        private static TextBlock Note(string text)
+        {
+            return new TextBlock { Text = text, Opacity = 0.6, Margin = new Thickness(10, 2, 10, 6) };
+        }
+
+        private static void RunInBackground(string exe, string args)
+        {
+            var t = new Thread(() => Run(exe, args)) { IsBackground = true };
+            t.Start();
         }
 
         private static string EthernetName()
@@ -222,9 +236,10 @@ namespace MacLook
             body.Children.Clear();
             body.Children.Add(Header("Sound"));
             slider = new ElasticSlider("") { Margin = new Thickness(10, 2, 10, 8), Value = Audio.GetVolume() };
-            slider.ValueChanged += v => { Audio.SetVolume((float)v); Glyph(); };
-            slider.Icon.MouseLeftButtonUp += (s, e) => { Audio.SetMute(!Audio.GetMute()); Glyph(); e.Handled = true; };
-            Glyph();
+            slider.ValueChanged += v => { Audio.SetVolume((float)v); UpdateVolumeGlyph(); };
+            // Preview + Handled: the slider captures the mouse on press, so the icon would never see its own button-up.
+            slider.Icon.PreviewMouseLeftButtonDown += (s, e) => { Audio.SetMute(!Audio.GetMute()); UpdateVolumeGlyph(); e.Handled = true; };
+            UpdateVolumeGlyph();
             body.Children.Add(slider);
             body.Children.Add(Sep());
             body.Children.Add(Header("Output"));
@@ -234,10 +249,9 @@ namespace MacLook
             body.Children.Add(Row(null, "Sound Settings…", null, () => Launcher.Open("ms-settings:sound")));
         }
 
-        private void Glyph()
+        private void UpdateVolumeGlyph()
         {
-            float v = Audio.GetVolume();
-            slider.Icon.Text = Audio.GetMute() || v < 0.01f ? "" : v < 0.34f ? "" : v < 0.67f ? "" : "";
+            slider.Icon.Text = VolumeGlyph();
         }
     }
 }

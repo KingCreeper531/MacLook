@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -232,6 +231,13 @@ namespace MacLook
             BuildSidebar();
             BuildPage();
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            if (fadingOut)
+            {
+                // Reopened while the close fade was still running: cancel it, or it would hide us again.
+                fadingOut = false;
+                BeginAnimation(OpacityProperty, null);
+                Opacity = 1;
+            }
             if (!IsVisible)
             {
                 snap = ScreenCapture.Capture();
@@ -247,10 +253,21 @@ namespace MacLook
             Dispatcher.BeginInvoke(new Action(ApplyGlass), DispatcherPriority.Loaded);
         }
 
+        private bool fadingOut;
+
         private void FadeOut()
         {
+            if (!IsVisible || fadingOut) return;
+            fadingOut = true;
             var a = new DoubleAnimation(Opacity, 0, TimeSpan.FromMilliseconds(160));
-            a.Completed += (s, e) => { Hide(); BeginAnimation(OpacityProperty, null); Opacity = 1; };
+            a.Completed += (s, e) =>
+            {
+                if (!fadingOut) return;   // Open() took over
+                fadingOut = false;
+                Hide();
+                BeginAnimation(OpacityProperty, null);
+                Opacity = 1;
+            };
             BeginAnimation(OpacityProperty, a);
         }
 
@@ -262,11 +279,15 @@ namespace MacLook
         /// <summary>Hide for a blink, photograph what's behind, come back with fresh glass.</summary>
         public void Recapture()
         {
-            if (!IsVisible) return;
+            if (!IsVisible || fadingOut) return;
+            // The open fade-in holds Opacity at 1 after it ends; drop it, or setting 0 here does nothing
+            // and the window photographs itself.
+            BeginAnimation(OpacityProperty, null);
             Opacity = 0;
             Launcher.Later(70, () =>
             {
                 snap = ScreenCapture.Capture();
+                if (fadingOut) return;
                 Opacity = 1;
                 Dispatcher.BeginInvoke(new Action(ApplyGlass), DispatcherPriority.Loaded);
             });
@@ -346,14 +367,16 @@ namespace MacLook
             return g;
         }
 
-        private static MacToggle Toggle(bool value, Action<bool> set)
+        // isSetting = false for controls that change Windows directly (volume, mute): they must not
+        // save settings and rebuild the whole desktop on every change.
+        private static MacToggle Toggle(bool value, Action<bool> set, bool isSetting = true)
         {
             var t = new MacToggle(value);
-            t.Changed += v => { set(v); Changed(); };
+            t.Changed += v => { set(v); if (isSetting) Changed(); };
             return t;
         }
 
-        private static UIElement Slider(double min, double max, double value, string fmt, Action<double> set)
+        private static UIElement Slider(double min, double max, double value, string fmt, Action<double> set, bool isSetting = true)
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal };
             var s = new ElasticSlider("") { Width = 210, Height = 22 };
@@ -361,7 +384,7 @@ namespace MacLook
             Action<double> show = v => txt.Text = v.ToString(fmt, System.Globalization.CultureInfo.InvariantCulture);
             s.Value = (value - min) / (max - min);
             show(value);
-            s.ValueChanged += f => { double v = min + f * (max - min); show(v); set(v); Changed(); };
+            s.ValueChanged += f => { double v = min + f * (max - min); show(v); set(v); if (isSetting) Changed(); };
             row.Children.Add(s);
             row.Children.Add(txt);
             return row;
@@ -455,7 +478,7 @@ namespace MacLook
                     if (v) Taskbar.Hide(); else Taskbar.Restore();
                 })),
                 Row("Windows key opens Launchpad", "Shortcuts like Win+E and Win+D keep working.", Toggle(Settings.WinKeyLaunchpad, v => Settings.WinKeyLaunchpad = v)),
-                Row("Open Mac Look at login", null, Toggle(login, v => { try { Startup.Enabled = v; } catch { } })),
+                Row("Open Mac Look at login", null, Toggle(login, v => { try { Startup.Enabled = v; } catch (Exception ex) { Program.Log(ex); } }, false)),
                 Row("Use these System Settings for Windows", "The Dock's Settings icon and the menu's System Settings open this window instead of Windows Settings.", Toggle(Settings.MacSettingsForWindows, v => Settings.MacSettingsForWindows = v))));
             page.Children.Add(Group(
                 Row("Keyboard shortcuts", "Spotlight: Alt+Space    Mission Control: Ctrl+Alt+Up    Launchpad: Windows key", null)));
@@ -528,7 +551,8 @@ namespace MacLook
             Action<int> move = d =>
             {
                 int to = selected + d;
-                if (selected < 0 || to < 0 || to >= Config.Entries.Count) return;
+                // The Dock can change the list behind our back (e.g. its own "Remove from Dock"), so check both ends.
+                if (selected < 0 || selected >= Config.Entries.Count || to < 0 || to >= Config.Entries.Count) return;
                 var e = Config.Entries[selected];
                 Config.Entries.RemoveAt(selected);
                 Config.Entries.Insert(to, e);
@@ -621,8 +645,8 @@ namespace MacLook
                 Row("Accent color", null, Swatches())));
             page.Children.Add(Group(
                 Row("Wallpaper", "An original rolling-hills wallpaper drawn by Mac Look.", Buttons(
-                    Button("Use Mac-Style", () => { try { Wallpaper.SetMacStyle(); Program.RecaptureDesktop(); } catch (Exception ex) { Program.Log(ex); } }),
-                    Button("Restore Original", () => { Wallpaper.Restore(); Program.RecaptureDesktop(); })))));
+                    Button("Use Mac-Style", () => ChangeWallpaper(Wallpaper.SetMacStyle)),
+                    Button("Restore Original", () => ChangeWallpaper(Wallpaper.Restore))))));
         }
 
         private UIElement Swatches()
@@ -725,8 +749,10 @@ namespace MacLook
 
         private UIElement CornerPicker(string current, Action<string> set)
         {
-            var b = Button(HotCorners.Label(current) + "  ▾", () => { });
-            b.MouseLeftButtonUp += (o, e) =>
+            // The menu is opened from Button's own action: Button marks the click handled, so a second
+            // MouseLeftButtonUp handler added here would never run.
+            Border b = null;
+            b = Button(HotCorners.Label(current) + "  ▾", () =>
             {
                 var m = new ContextMenu { PlacementTarget = b, Placement = PlacementMode.Bottom };
                 foreach (var a in HotCorners.Actions)
@@ -737,7 +763,7 @@ namespace MacLook
                     m.Items.Add(mi);
                 }
                 m.IsOpen = true;
-            };
+            });
             return b;
         }
 

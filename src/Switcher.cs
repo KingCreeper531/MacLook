@@ -1,14 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Imaging;
 
 namespace MacLook
 {
@@ -31,9 +29,8 @@ namespace MacLook
             public double Sel, SelTarget;
         }
 
-        [DllImport("gdi32.dll")] private static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);
-
-        private const double CellW = 252, CellH = 204, Pad = 20, Footer = 64, Radius = 26;
+        private const double CellW = 252, CellH = 204, Pad = 20, Footer = 64;
+        private const int MaxCards = 18, MaxCols = 6;
         private readonly Canvas canvas = new Canvas();
         private readonly Border ring;
         private readonly TranslateTransform ringPos = new TranslateTransform();
@@ -106,15 +103,18 @@ namespace MacLook
         // ------------------------------------------------------------------ open / move / close
         public void Open(bool backwards)
         {
+            // The layout below needs the real DPI scale, which is only known once the window has a handle
+            // (otherwise the very first Alt+Tab is laid out at 100% and lands off-centre on scaled displays).
+            if (hwnd == IntPtr.Zero) new WindowInteropHelper(this).EnsureHandle();
             var wins = WindowTracker.Enumerate();
             if (wins.Count == 0) return;
-            if (wins.Count > 18) wins = wins.Take(18).ToList();
+            if (wins.Count > MaxCards) wins = wins.Take(MaxCards).ToList();
 
             int n = wins.Count;
             var screen = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
             double sw = screen.Width / scale, sh = screen.Height / scale;
             int maxCols = Math.Max(1, (int)((sw - 160) / CellW));
-            int cols = Math.Min(n, Math.Min(6, maxCols));
+            int cols = Math.Min(n, Math.Min(MaxCols, maxCols));
             int rows = (int)Math.Ceiling(n / (double)cols);
             double w = cols * CellW + 2 * Pad, h = rows * CellH + 2 * Pad + Footer;
             Width = w; Height = h;

@@ -32,6 +32,8 @@ namespace MacLook
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string name);
 
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        /// <summary>Posts the show/hide instead of waiting for the window's (possibly hung) thread.</summary>
+        [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
         public const int SW_HIDE = 0, SW_SHOWNORMAL = 1, SW_MAXIMIZE = 3, SW_SHOW = 5, SW_MINIMIZE = 6, SW_SHOWNA = 8, SW_RESTORE = 9;
 
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -63,7 +65,33 @@ namespace MacLook
         public const int DWMWA_CLOAKED = 14;
 
         [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
-        public const uint KEYEVENTF_KEYUP = 2;
+        public const uint KEYEVENTF_EXTENDEDKEY = 1, KEYEVENTF_KEYUP = 2;
+
+        [StructLayout(LayoutKind.Sequential)] private struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Sequential)] private struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Explicit)] private struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+        [StructLayout(LayoutKind.Sequential)] private struct INPUT { public uint type; public InputUnion u; }   // 40 bytes on x64, like the native union
+        [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
+        private const uint INPUT_KEYBOARD = 1;
+        /// <summary>A virtual-key code Windows leaves unassigned; tapping it turns a lone modifier press into a "combo".</summary>
+        public const byte VK_MASK = 0xE8;
+
+        /// <summary>
+        /// Taps the mask key, then releases vk, in one atomic batch. Returns false if Windows rejected the input
+        /// (UIPI blocks it while an elevated window is active), so the caller can let the real key-up through.
+        /// </summary>
+        public static bool SendMaskedKeyUp(uint vk, uint scan, bool extended)
+        {
+            var keys = new INPUT[3];
+            for (int i = 0; i < keys.Length; i++) keys[i].type = INPUT_KEYBOARD;
+            keys[0].u.ki.wVk = VK_MASK;
+            keys[1].u.ki.wVk = VK_MASK;
+            keys[1].u.ki.dwFlags = KEYEVENTF_KEYUP;
+            keys[2].u.ki.wVk = (ushort)vk;
+            keys[2].u.ki.wScan = (ushort)scan;
+            keys[2].u.ki.dwFlags = KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+            return SendInput((uint)keys.Length, keys, Marshal.SizeOf(typeof(INPUT))) == keys.Length;
+        }
 
         [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr h, int id, uint mods, uint vk);
         [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr h, int id);
@@ -82,6 +110,7 @@ namespace MacLook
         public const uint EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
         [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int l, int t, int r, int b);
+        [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr h);
 
         // ---- DWM attributes for other apps' windows ----
         [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
@@ -210,8 +239,10 @@ namespace MacLook
         public static string GetKnownFolder(string guid)
         {
             IntPtr p;
-            if (SHGetKnownFolderPath(new Guid(guid), 0, IntPtr.Zero, out p) != 0) return null;
-            try { return Marshal.PtrToStringUni(p); } finally { Marshal.FreeCoTaskMem(p); }
+            int hr = SHGetKnownFolderPath(new Guid(guid), 0, IntPtr.Zero, out p);
+            // The buffer must be freed whether or not the call succeeded.
+            try { return hr == 0 && p != IntPtr.Zero ? Marshal.PtrToStringUni(p) : null; }
+            finally { if (p != IntPtr.Zero) Marshal.FreeCoTaskMem(p); }
         }
 
         public static void PressKeys(params byte[] keys)
@@ -226,9 +257,12 @@ namespace MacLook
             if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
             if (!SetForegroundWindow(h))
             {
-                // Foreground lock fallback: a synthetic key press lets us take foreground.
-                keybd_event(0x12, 0, 0, UIntPtr.Zero);
-                keybd_event(0x12, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                // Foreground lock fallback: a synthetic key press lets us take foreground. The mask key in the
+                // middle keeps the Alt tap from opening the menu bar of whichever app receives it.
+                keybd_event(VK_ALT, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MASK, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MASK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                keybd_event(VK_ALT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 SetForegroundWindow(h);
             }
             BringWindowToTop(h);

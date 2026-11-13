@@ -39,21 +39,36 @@ namespace MacLook
         public static void Load()
         {
             Hidden.Clear(); Pinned.Clear(); Order.Clear(); Names.Clear(); Uses.Clear(); Customs.Clear();
-            if (!File.Exists(FilePath)) return;
-            foreach (var line in File.ReadAllLines(FilePath))
+            string[] lines;
+            try
+            {
+                if (!File.Exists(FilePath)) return;
+                lines = File.ReadAllLines(FilePath);
+            }
+            catch (Exception ex) { Program.Log(ex); return; }   // unreadable: start with defaults rather than fail start-up
+            foreach (var line in lines)
             {
                 var p = line.Split('\t');
-                if (p.Length < 2) continue;
+                if (p.Length < 2 || p[1].Length == 0) continue;
                 switch (p[0])
                 {
                     case "hide": Hidden.Add(p[1]); break;
-                    case "pin": Pinned.Add(p[1]); break;
+                    case "pin": if (!Pinned.Contains(p[1])) Pinned.Add(p[1]); break;
                     case "order": Order.Add(p[1]); break;
                     case "name": if (p.Length > 2) Names[p[1]] = p[2]; break;
                     case "uses": int n; if (p.Length > 2 && int.TryParse(p[2], out n)) Uses[p[1]] = n; break;
-                    case "custom": if (p.Length > 2) Customs.Add(new AppEntry { Path = p[1], Name = p[2], Custom = true }); break;
+                    case "custom":
+                        if (p.Length > 2 && !Customs.Any(c => string.Equals(c.Path, p[1], StringComparison.OrdinalIgnoreCase)))
+                            Customs.Add(new AppEntry { Path = p[1], Name = p[2], Custom = true });
+                        break;
                 }
             }
+        }
+
+        /// <summary>Tabs and line breaks would split a saved line; keep every field on its line.</summary>
+        private static string Clean(string s)
+        {
+            return (s ?? "").Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
         }
 
         public static void Save()
@@ -62,12 +77,12 @@ namespace MacLook
             {
                 Directory.CreateDirectory(Config.Dir);
                 var lines = new List<string>();
-                lines.AddRange(Hidden.Select(k => "hide\t" + k));
-                lines.AddRange(Pinned.Select(k => "pin\t" + k));
-                lines.AddRange(Order.Select(k => "order\t" + k));
-                lines.AddRange(Names.Select(kv => "name\t" + kv.Key + "\t" + kv.Value));
-                lines.AddRange(Uses.Select(kv => "uses\t" + kv.Key + "\t" + kv.Value));
-                lines.AddRange(Customs.Select(c => "custom\t" + c.Path + "\t" + c.Name));
+                lines.AddRange(Hidden.Select(k => "hide\t" + Clean(k)));
+                lines.AddRange(Pinned.Select(k => "pin\t" + Clean(k)));
+                lines.AddRange(Order.Select(k => "order\t" + Clean(k)));
+                lines.AddRange(Names.Select(kv => "name\t" + Clean(kv.Key) + "\t" + Clean(kv.Value)));
+                lines.AddRange(Uses.Select(kv => "uses\t" + Clean(kv.Key) + "\t" + kv.Value));
+                lines.AddRange(Customs.Select(c => "custom\t" + Clean(c.Path) + "\t" + Clean(c.Name)));
                 File.WriteAllLines(FilePath, lines.ToArray());
             }
             catch (Exception ex) { Program.Log(ex); }
@@ -85,7 +100,9 @@ namespace MacLook
     {
         private static readonly object sync = new object();
         private static List<AppEntry> apps = new List<AppEntry>();
-        public static bool Loaded { get; private set; }
+        private static volatile bool loaded;
+        /// <summary>The background scan of installed apps has finished (it is set from that thread).</summary>
+        public static bool Loaded { get { return loaded; } }
 
         public static List<AppEntry> Apps { get { lock (sync) return apps; } }
 
@@ -120,10 +137,17 @@ namespace MacLook
                     }
                 }
                 catch (Exception ex) { Program.Log(ex); }
-                list = list.GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First())
-                           .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
-                lock (sync) apps = list;
-                Loaded = true;
+                // One entry per name and per id (two shortcuts can point at the same app; a repeated id
+                // would put the same cached tile into Launchpad twice).
+                try
+                {
+                    list = list.GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First())
+                               .GroupBy(a => a.Id).Select(g => g.First())
+                               .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                    lock (sync) apps = list;
+                }
+                catch (Exception ex) { Program.Log(ex); }
+                finally { loaded = true; }   // even on failure, so Launchpad stops saying "Loading apps…"
             });
             t.SetApartmentState(ApartmentState.STA);
             t.IsBackground = true;
@@ -232,6 +256,8 @@ namespace MacLook
         private List<AppEntry> visible = new List<AppEntry>();
         private DateTime lastHidden;
         private bool closing;
+        private int openCount;
+        private const int LoadPollMs = 400;
         private readonly Image backdrop;
 
         // drag to rearrange
@@ -358,13 +384,15 @@ namespace MacLook
             backdrop.Source = null;
             backdrop.Opacity = 0;
             var pix = snap;
-            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            int gen = ++openCount;
+            ThreadPool.QueueUserWorkItem(_ =>
             {
-                BitmapSource blurred = null;
+                BitmapSource blurred = null;   // Backdrop() freezes it, so it may cross to the UI thread
                 try { blurred = GlassFx.Backdrop(pix, 6, 6, 0.32); } catch (Exception ex) { Program.Log(ex); }
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    if (!IsVisible || closing || blurred == null) return;
+                    // A late result from an earlier opening would show an old picture of the screen.
+                    if (gen != openCount || !IsVisible || closing || blurred == null) return;
                     backdrop.Source = blurred;
                     backdrop.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
                 }));
@@ -389,7 +417,17 @@ namespace MacLook
             content.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220)));
             st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.08, 1, TimeSpan.FromMilliseconds(260)) { EasingFunction = ease });
             st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1.08, 1, TimeSpan.FromMilliseconds(260)) { EasingFunction = ease });
-            if (!AppCatalog.Loaded) Launcher.Later(600, () => { if (IsVisible) Filter(); });
+            if (!AppCatalog.Loaded) RefreshWhenLoaded();
+        }
+
+        /// <summary>The app list is still being read: keep checking, and fill the grid as soon as it is ready.</summary>
+        private void RefreshWhenLoaded()
+        {
+            Launcher.Later(LoadPollMs, () =>
+            {
+                if (!IsVisible || closing) return;
+                if (AppCatalog.Loaded) Filter(); else RefreshWhenLoaded();
+            });
         }
 
         public void ResetTiles() { tiles.Clear(); if (IsVisible) Filter(); }
@@ -436,6 +474,7 @@ namespace MacLook
                     .Where(x => x.s > 0)
                     .OrderByDescending(x => x.s).ThenBy(x => AppCatalog.DisplayName(x.a), StringComparer.OrdinalIgnoreCase)
                     .Select(x => x.a).ToList();
+                visible = Unique(visible, new HashSet<string>());
                 pinnedHeader.Visibility = Visibility.Collapsed;
                 pinnedGrid.Visibility = Visibility.Collapsed;
                 allHeader.Visibility = Visibility.Collapsed;
@@ -445,6 +484,9 @@ namespace MacLook
             {
                 List<AppEntry> pinned, rest;
                 AppCatalog.Arrange(out pinned, out rest);
+                var seen = new HashSet<string>();
+                pinned = Unique(pinned, seen);
+                rest = Unique(rest, seen);
                 visible = pinned.Concat(rest).ToList();
                 bool hasPins = pinned.Count > 0;
                 pinnedHeader.Visibility = hasPins ? Visibility.Visible : Visibility.Collapsed;
@@ -455,6 +497,15 @@ namespace MacLook
             }
             if (!AppCatalog.Loaded && visible.Count == 0)
                 grid.Children.Add(new TextBlock { Text = "Loading apps…", FontSize = 16, Opacity = 0.7, Margin = new Thickness(40) });
+        }
+
+        /// <summary>
+        /// Drops apps whose id was already seen. Tiles are cached per id, and one element can't be put
+        /// into the grid twice (WPF throws, which would leave Launchpad empty).
+        /// </summary>
+        private static List<AppEntry> Unique(List<AppEntry> list, HashSet<string> seen)
+        {
+            return list.Where(a => seen.Add(a.Id)).ToList();
         }
 
         private FrameworkElement Tile(AppEntry a, bool inPinned)
@@ -516,9 +567,10 @@ namespace MacLook
                 if (Math.Abs(p.X - pressPoint.X) < 8 && Math.Abs(p.Y - pressPoint.Y) < 8) return;
                 dragged = true;
                 iconBox.Opacity = 0.35;
-                DragDrop.DoDragDrop(st, a.Id, DragDropEffects.Move);
-                iconBox.Opacity = 1;
-                pressed = null;
+                // Runs a nested loop until the drop; the grid may be rebuilt (Filter) before it returns.
+                try { DragDrop.DoDragDrop(st, a.Id, DragDropEffects.Move); }
+                catch (Exception ex) { Program.Log(ex); }
+                finally { iconBox.Opacity = 1; pressed = null; }
             };
             st.MouseLeftButtonUp += (s, e) =>
             {
@@ -541,8 +593,12 @@ namespace MacLook
         /// <summary>Drop an app onto another app (or an empty area) to move it there.</summary>
         private void DropOn(DragEventArgs e, AppEntry target, bool intoPinned)
         {
-            var id = e.Data.GetData(typeof(string)) as string;
+            // Only our own tiles: text or files dragged in from other apps must not end up in the saved layout.
+            string id;
+            try { id = e.Data.GetData(typeof(string)) as string; }
+            catch (Exception ex) { Program.Log(ex); return; }   // foreign data objects can throw here
             if (id == null || (target != null && target.Id == id)) return;
+            if (!AppCatalog.All.Any(a => a.Id == id)) return;
             List<AppEntry> pinned, rest;
             AppCatalog.Arrange(out pinned, out rest);
 

@@ -7,7 +7,6 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -39,6 +38,11 @@ namespace MacLook
         private const double Pad = 5, Gap = 6, SepWidth = 15, BottomMargin = 6;
         private static readonly Brush HitBrush = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
         private const string TrashGuid = "::{645FF040-5081-101B-9F08-00AA002F954E}";
+        private const int EdgePollMs = 50;          // auto-hide: how often the pointer is checked
+        private const int HideDelayMs = 400;        // auto-hide: pointer must stay away this long
+        private const double EdgeSlack = 80;        // auto-hide: extra width (DIPs) either side of the Dock that still counts
+        private const double DragStartDistance = 6; // DIPs the pointer must travel before a press becomes a drag
+        private const double RemoveDistance = 70;   // drag this far above the Dock to remove an icon
 
         private double Base { get { return Settings.IconSize; } }
         private double MaxScale { get { return Settings.Magnify ? Settings.MagnifyScale : 1.0; } }
@@ -85,7 +89,7 @@ namespace MacLook
             FontSize = 13;
             downloads = Native.GetKnownFolder("374DE290-123F-4565-9164-39C4925E467B");
             Build();
-            Config.LoadDock();
+            try { Config.LoadDock(); } catch (Exception ex) { Program.Log(ex); }
             SourceInitialized += OnSourceInitialized;
             Loaded += (s, e) => Refresh();
             WatchConfig();
@@ -164,7 +168,7 @@ namespace MacLook
             Native.SetWindowLongPtr(hwnd, Native.GWL_EXSTYLE, new IntPtr(ex | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
             Reposition();
 
-            edgeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+            edgeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(EdgePollMs) };
             edgeTimer.Tick += (s, a) => EdgeTick();
             edgeTimer.Start();
             if (Settings.DockAutoHide) { shown = false; slide.Y = HiddenOffset; }
@@ -202,6 +206,7 @@ namespace MacLook
         /// <summary>Re-create everything after a size / style change in Settings.</summary>
         public void Rebuild()
         {
+            CancelDrag();
             byKey.Clear();
             items = new List<DockItem>();
             Reposition();
@@ -225,7 +230,6 @@ namespace MacLook
                 left = tl.X; right = tl.X + dockGrid.ActualWidth * scale;
             }
             catch { return true; }
-            IntPtr fg = Native.GetForegroundWindow();
             foreach (var w in lastWins)
             {
                 if (!Native.IsWindowVisible(w.Hwnd) || Native.IsIconic(w.Hwnd)) continue;
@@ -236,12 +240,12 @@ namespace MacLook
         }
 
         /// <summary>Where (in screen pixels) the Dock icon for a window is, for the genie animation.</summary>
-        public Rect IconRectFor(IntPtr hwnd)
+        public Rect IconRectFor(IntPtr window)
         {
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
             double size = Base * scale;
             var fallback = new Rect(b.Left + b.Width / 2.0 - size / 2, b.Bottom - size - (Pad + BottomMargin) * scale, size, size);
-            var it = items.FirstOrDefault(i => i.Windows.Any(w => w.Hwnd == hwnd));
+            var it = items.FirstOrDefault(i => i.Windows.Any(w => w.Hwnd == window));
             if (it == null || it.Img == null || !shown) return fallback;
             try
             {
@@ -264,8 +268,8 @@ namespace MacLook
             try
             {
                 var tl = dockGrid.PointToScreen(new Point(0, 0));
-                left = tl.X - 80 * scale;
-                right = tl.X + dockGrid.ActualWidth * scale + 80 * scale;
+                left = tl.X - EdgeSlack * scale;
+                right = tl.X + dockGrid.ActualWidth * scale + EdgeSlack * scale;
             }
             catch { return; }
 
@@ -285,7 +289,7 @@ namespace MacLook
             bool inside = dockGrid.IsMouseOver || menuOpen || dragging || (p.Y >= topPx && p.X >= left && p.X <= right);
             if (inside) { leftAt = DateTime.MinValue; return; }
             if (leftAt == DateTime.MinValue) leftAt = DateTime.Now;
-            else if ((DateTime.Now - leftAt).TotalMilliseconds > 400) HideDock();
+            else if ((DateTime.Now - leftAt).TotalMilliseconds > HideDelayMs) HideDock();
         }
 
         public void ShowDock()
@@ -300,8 +304,10 @@ namespace MacLook
                 int h = Math.Min(b.Height, (int)((Base * 2.6 + 80) * scale));
                 localSnap = ScreenCapture.CaptureRegion(b.Left, b.Bottom - h, b.Width, h);
             }
-            slide.BeginAnimation(TranslateTransform.YProperty, null);
+            // Read where the dock is right now (mid-way through a hide animation, or fully hidden)
+            // before clearing the animation; afterwards slide.Y would just report its base value.
             double from = slide.Y;
+            slide.BeginAnimation(TranslateTransform.YProperty, null);
             slide.Y = 0;
             ApplyGlass();
             slide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(320))
@@ -337,9 +343,10 @@ namespace MacLook
                     NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
                     EnableRaisingEvents = true
                 };
-                FileSystemEventHandler h = (s, e) => Dispatcher.BeginInvoke(new Action(() => { reloadTimer.Stop(); reloadTimer.Start(); }));
-                watcher.Changed += h;
-                watcher.Created += h;
+                Action kick = () => Dispatcher.BeginInvoke(new Action(() => { reloadTimer.Stop(); reloadTimer.Start(); }));
+                watcher.Changed += (s, e) => kick();
+                watcher.Created += (s, e) => kick();
+                watcher.Renamed += (s, e) => kick();   // editors that save via a temp file + rename
             }
             catch (Exception ex) { Program.Log(ex); }
         }
@@ -407,6 +414,8 @@ namespace MacLook
 
         public void Refresh()
         {
+            // Rebuilding the panel mid-drag would pull the captured icon out of the tree and strand the ghost.
+            if (dragging) return;
             List<AppWindow> wins;
             try { wins = WindowTracker.Enumerate(); }
             catch (Exception ex) { Program.Log(ex); return; }
@@ -511,7 +520,7 @@ namespace MacLook
             {
                 if (pressItem != it || !g.IsMouseCaptured) return;
                 var p = e.GetPosition(this);
-                if (!dragging && it.Entry != null && (Math.Abs(p.X - pressPoint.X) > 6 || Math.Abs(p.Y - pressPoint.Y) > 6)) BeginDrag(it);
+                if (!dragging && it.Entry != null && (Math.Abs(p.X - pressPoint.X) > DragStartDistance || Math.Abs(p.Y - pressPoint.Y) > DragStartDistance)) BeginDrag(it);
                 if (dragging) UpdateDrag(p);
             };
             g.MouseLeftButtonUp += (s, e) =>
@@ -522,6 +531,11 @@ namespace MacLook
                 g.ReleaseMouseCapture();
                 if (!wasDrag && pressItem == it) Click(it);
                 pressItem = null;
+            };
+            g.LostMouseCapture += (s, e) =>
+            {
+                // Capture taken away mid-drag (window switch, Rebuild...): put the icon back instead of leaving a ghost.
+                if (dragging && dragItem == it) CancelDrag();
             };
             g.MouseLeave += (s, e) => { if (!dragging) img.Opacity = 1; };
             g.MouseRightButtonUp += (s, e) => { e.Handled = true; ShowMenu(it); };
@@ -644,7 +658,7 @@ namespace MacLook
         private DockItem pressItem, dragItem;
         private Point pressPoint;
         private bool dragging, dragRemove;
-        private int dragInsert;
+        private DockEntry dragBefore;   // drop target: insert before this pinned entry (null = at the end)
         private Image ghost;
         private TextBlock removeTag;
 
@@ -669,22 +683,38 @@ namespace MacLook
             Canvas.SetTop(ghost, p.Y - ghost.Height / 2);
             double bgTop;
             try { bgTop = bg.TranslatePoint(new Point(0, 0), this).Y; } catch { bgTop = ActualHeight - Base; }
-            dragRemove = p.Y < bgTop - 70;
+            dragRemove = p.Y < bgTop - RemoveDistance;
             ghost.Opacity = dragRemove ? 0.55 : 0.95;
             removeTag.Visibility = dragRemove ? Visibility.Visible : Visibility.Collapsed;
             Canvas.SetLeft(removeTag, p.X - 22);
             Canvas.SetTop(removeTag, p.Y - ghost.Height / 2 - 20);
 
-            // Where it would land among the pinned apps.
-            var pinned = items.Where(i => i.Entry != null).ToList();
-            dragInsert = 0;
-            foreach (var i in pinned)
+            // Where it would land among the pinned apps: before the first pinned icon right of the pointer.
+            // Remembered as an entry (not an index) so duplicate or hidden lines in dock.txt can't skew it.
+            dragBefore = null;
+            foreach (var i in items)
             {
-                if (i == dragItem) continue;
+                if (i.Entry == null || i == dragItem) continue;
                 double cx;
                 try { cx = i.View.TranslatePoint(new Point(i.View.ActualWidth / 2, 0), this).X; } catch { continue; }
-                if (p.X > cx) dragInsert++;
+                if (p.X <= cx) { dragBefore = i.Entry; break; }
             }
+        }
+
+        /// <summary>Abandon a drag without changing the Dock (the icon goes back where it was).</summary>
+        private void CancelDrag()
+        {
+            if (!dragging) return;
+            dragging = false;
+            pressItem = null;   // the release that follows must not count as a click
+            if (dragItem != null && dragItem.View != null) dragItem.View.Opacity = 1;
+            if (dragItem != null && dragItem.Img != null) dragItem.Img.Opacity = 1;
+            dragItem = null;
+            dragBefore = null;
+            if (ghost != null) overlay.Children.Remove(ghost);
+            if (removeTag != null) overlay.Children.Remove(removeTag);
+            ghost = null;
+            removeTag = null;
         }
 
         private void EndDrag()
@@ -694,12 +724,15 @@ namespace MacLook
             dragItem = null;
             if (it == null) return;
             it.View.Opacity = 1;
-            double gx = Canvas.GetLeft(ghost), gy = Canvas.GetTop(ghost);
+            var g2 = ghost;
+            var before = dragBefore;
             overlay.Children.Remove(removeTag);
+            ghost = null;
+            removeTag = null;
+            dragBefore = null;
             if (dragRemove)
             {
                 // "Poof": the icon swells and vanishes.
-                var g2 = ghost;
                 var st = new ScaleTransform(1, 1);
                 g2.RenderTransformOrigin = new Point(0.5, 0.5);
                 g2.RenderTransform = st;
@@ -713,14 +746,14 @@ namespace MacLook
             }
             else
             {
-                overlay.Children.Remove(ghost);
+                overlay.Children.Remove(g2);
                 var list = Config.Entries;
                 int from = list.IndexOf(it.Entry);
                 if (from < 0) return;
                 list.RemoveAt(from);
-                list.Insert(Math.Max(0, Math.Min(dragInsert, list.Count)), it.Entry);
+                int to = before == null ? -1 : list.IndexOf(before);
+                list.Insert(to < 0 ? list.Count : to, it.Entry);
             }
-            ghost = null;
             try { Config.SaveDock(); } catch (Exception ex) { Program.Log(ex); }
             Reload();
         }
@@ -823,7 +856,7 @@ namespace MacLook
                 }
             }
             m.Items.Add(new Separator());
-            if (!it.IsSeparator && !it.IsBuiltin && !string.IsNullOrEmpty(it.IconSource))
+            if (!it.IsBuiltin && !string.IsNullOrEmpty(it.IconSource))
             {
                 string key = it.IconSource;
                 m.Items.Add(MI("Change Icon…", () => IconStyler.PickFor(key)));

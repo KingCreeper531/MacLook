@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.4.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.4.3.0")]
+[assembly: System.Reflection.AssemblyVersion("2.5.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.5.0.0")]
 
 namespace MacLook
 {
@@ -39,15 +39,22 @@ namespace MacLook
         public static Pix Desktop;
 
         private static Mutex mutex;
-        private static bool cleaned, started, recapturing;
+        private static bool cleaned, started, recapturing, recapturePending;
+        private static System.Windows.Threading.DispatcherTimer recaptureTimer;
+
+        private const int StartupDelayMs = 700;          // let the app bars push windows aside before photographing the desktop
+        private const int RecaptureDelayMs = 350;        // bars hidden this long before re-photographing the desktop
+        private const int SystemChangeDebounceMs = 600;  // wallpaper / display changes arrive in bursts
+        private const int ApplySettingsDebounceMs = 120;
 
         [STAThread]
         private static void Main(string[] args)
         {
             if (args.Length > 0 && args[0].Equals("--restore", StringComparison.OrdinalIgnoreCase))
             {
-                // Emergency: put the Windows taskbar back if Mac Look was killed while it was hidden.
+                // Emergency: put the Windows taskbar (and Windows' minimize animation) back if Mac Look was killed.
                 Taskbar.Restore();
+                try { Settings.Load(); WindowAnimator.RestoreAfterCrash(); } catch { }
                 return;
             }
             if (args.Length > 1 && args[0].Equals("--make-icon", StringComparison.OrdinalIgnoreCase))
@@ -85,10 +92,10 @@ namespace MacLook
                     bool wasDark = Theme.Dark;
                     Theme.Load();
                     if (wasDark != Theme.Dark) { Theme.Apply(app.Resources); RefreshGlass(); }
-                    if (e.Category == UserPreferenceCategory.Desktop) RecaptureDesktop();   // wallpaper changed
+                    if (e.Category == UserPreferenceCategory.Desktop) RecaptureDesktopSoon();   // wallpaper changed
                 }));
             SystemEvents.DisplaySettingsChanged += (s, e) =>
-                app.Dispatcher.BeginInvoke(new Action(() => { MenuBar.Reposition(); Dock.Reposition(); RecaptureDesktop(); }));
+                app.Dispatcher.BeginInvoke(new Action(() => { MenuBar.Reposition(); Dock.Reposition(); RecaptureDesktopSoon(); }));
 
             MenuBar = new MenuBarWindow();
             Dock = new DockWindow();
@@ -108,21 +115,32 @@ namespace MacLook
             // the empty desktop there before showing anything, so the glass has something real to refract.
             new WindowInteropHelper(MenuBar).EnsureHandle();
             new WindowInteropHelper(Dock).EnsureHandle();
-            if (Settings.HideTaskbar) Taskbar.Hide();
-            Launcher.Later(700, () =>
+            if (Settings.HideTaskbar) Taskbar.Hide(); else Taskbar.Restore();   // also undoes a hidden taskbar left by a crash
+            bool demo = Array.IndexOf(args, "--demo") >= 0;
+            Launcher.Later(StartupDelayMs, () =>
             {
-                Desktop = ScreenCapture.Capture();
-                MenuBar.Show();
-                MenuBar.Intro();
-                Dock.Show();
                 started = true;
-                AppCatalog.Load();
-                WinKey.Install();
-                WindowAnimator.Install();
-                HotCorners.Start();
-                WindowButtons.Start();
-                if (Array.IndexOf(args, "--demo") < 0) Updater.Start();
-                if (Array.IndexOf(args, "--demo") >= 0) Demo();
+                if (IsFullscreen)
+                {
+                    // A game or video went fullscreen while we were starting: stay hidden (SetFullscreen(false)
+                    // shows the bars later) and photograph the desktop once it is visible again.
+                    recapturePending = true;
+                }
+                else
+                {
+                    Try(() => Desktop = ScreenCapture.Capture());   // no photo yet: the bars fall back to plain acrylic
+                    MenuBar.Show();
+                    MenuBar.Intro();
+                    Dock.Show();
+                }
+                // Each piece starts on its own, so one failing (e.g. a bad Launchpad cache) can't silently
+                // leave the Windows key, window animations or Mac buttons switched off.
+                Try(AppCatalog.Load);
+                Try(WinKey.Install);
+                Try(WindowAnimator.Install);
+                Try(HotCorners.Start);
+                Try(WindowButtons.Start);
+                if (demo) Demo(); else Try(Updater.Start);
             });
 
             app.Run();
@@ -136,8 +154,8 @@ namespace MacLook
             bool wipe = !quiet && MessageBox.Show("Also delete your Mac Look settings, dock list and custom icons?",
                     "Uninstall Mac Look", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
             InstallInfo.StopRunning();
-            try { Settings.Load(); if (Wallpaper.CanRestore) Wallpaper.Restore(); } catch { }
-            try { Taskbar.Restore(); } catch { }
+            try { Settings.Load(); if (Wallpaper.CanRestore) Wallpaper.Restore(); } catch (Exception ex) { Log(ex); }
+            Try(Taskbar.Restore);
             InstallInfo.Unregister(wipe, Config.Dir);
             if (!quiet) MessageBox.Show("Mac Look has been removed.", "Uninstall Mac Look", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -146,8 +164,9 @@ namespace MacLook
         public static void SetFullscreen(bool fs)
         {
             IsFullscreen = fs;
-            if (!started || recapturing) return;
+            if (!started || recapturing) return;   // RecaptureDesktop checks IsFullscreen when it finishes
             if (fs) { MenuBar.Hide(); Dock.Hide(); }
+            else if (recapturePending) { recapturePending = false; RecaptureDesktop(); }
             else { MenuBar.Show(); Dock.Show(); }
         }
 
@@ -156,7 +175,7 @@ namespace MacLook
         {
             if (applyTimer == null)
             {
-                applyTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+                applyTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ApplySettingsDebounceMs) };
                 applyTimer.Tick += (s, e) => { applyTimer.Stop(); ApplySettings(); };
             }
             applyTimer.Stop();
@@ -179,7 +198,6 @@ namespace MacLook
                 WindowAnimator.ApplySystemAnimation();
                 MenuBar.RegisterShortcuts();
                 WindowButtons.Refresh();
-                Launchpad.ResetTiles();
             }
             catch (Exception ex) { Log(ex); }
         }
@@ -201,25 +219,46 @@ namespace MacLook
         public static void RecaptureDesktop()
         {
             if (!started || recapturing) return;
+            if (IsFullscreen)
+            {
+                // The screen shows a game or video, not the desktop: photograph it once fullscreen ends.
+                recapturePending = true;
+                return;
+            }
             recapturing = true;
             MenuBar.Hide();
             Dock.Hide();
-            Launcher.Later(350, () =>
+            Launcher.Later(RecaptureDelayMs, () =>
             {
-                Desktop = ScreenCapture.Capture();
                 recapturing = false;
+                if (IsFullscreen)
+                {
+                    // Went fullscreen while we were waiting: stay hidden and try again afterwards.
+                    recapturePending = true;
+                    return;
+                }
+                // Show the bars again even if the capture fails (they keep the previous photo then).
+                try { Desktop = ScreenCapture.Capture(); } catch (Exception ex) { Log(ex); }
                 MenuBar.Show();
                 Dock.Show();
             });
         }
 
-        /// <summary>Self-test: opens each surface, saves a screenshot of it, then quits.</summary>
+        /// <summary>Recapture once a burst of wallpaper / display change notifications has settled.</summary>
+        private static void RecaptureDesktopSoon()
+        {
+            if (recaptureTimer == null)
+            {
+                recaptureTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SystemChangeDebounceMs) };
+                recaptureTimer.Tick += (s, e) => { recaptureTimer.Stop(); RecaptureDesktop(); };
+            }
+            recaptureTimer.Stop();
+            recaptureTimer.Start();
+        }
+
+        /// <summary>Self-test (--demo): logs which apps the Launchpad keeps and hides, then quits.</summary>
         private static void Demo()
         {
-            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            int cx = b.Left + b.Width / 2;
-            Native.POINT orig;
-            Native.GetCursorPos(out orig);
             var steps = new Action[]
             {
                 () => { },
@@ -231,7 +270,8 @@ namespace MacLook
                     Log("LAUNCHPAD hidden: " + string.Join(" | ", all.Where(a => !AppCatalog.IsRealApp(a)).Select(a => a.Name).ToArray()));
                 },
                 Quit
-            };     int i = 0;
+            };
+            int i = 0;
             Action next = null;
             next = () =>
             {
@@ -242,63 +282,29 @@ namespace MacLook
             Launcher.Later(1500, next);
         }
 
-        private static void SaveDockArea(string name)
-        {
-            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            int w = Math.Min(b.Width, 1800), h = 260;
-            Save(name, ScreenCapture.CaptureRegion(b.Left + (b.Width - w) / 2, b.Bottom - h, w, h));
-        }
-
-        private static void SaveCenter(string name)
-        {
-            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            Save(name, ScreenCapture.CaptureRegion(b.Left + b.Width / 2 - 700, b.Top + 120, 1400, 900));
-        }
-
-        private static void SaveButtons(string name)
-        {
-            var r = Native.FrameRect(Native.GetForegroundWindow());
-            Save(name, ScreenCapture.CaptureRegion(r.Right - 360, r.Top, 360, 60));
-        }
-
-        private static void SaveLights(string name)
-        {
-            var r = Native.FrameRect(Native.GetForegroundWindow());
-            Save(name, ScreenCapture.CaptureRegion(r.Left, r.Top, 420, 60));
-        }
-
-        private static void SaveCorner(string name)
-        {
-            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            Save(name, ScreenCapture.CaptureRegion(b.Right - 520, b.Top, 520, 620));
-        }
-
-        private static void Save(string name, Pix p)
-        {
-            if (p == null) return;
-            var bmp = System.Windows.Media.Imaging.BitmapSource.Create(p.W, p.H, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, p.D, p.W * 4);
-            var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
-            enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
-            Directory.CreateDirectory(Path.Combine(Config.Dir, "demo"));
-            using (var fs = File.Create(Path.Combine(Config.Dir, "demo", name + ".png"))) enc.Save(fs);
-        }
-
         public static void Quit()
         {
             Cleanup();
             Application.Current.Shutdown();
         }
 
+        /// <summary>Put the user's desktop back. Every step runs even if an earlier one fails.</summary>
         public static void Cleanup()
         {
             if (cleaned) return;
             cleaned = true;
-            try { WinKey.Uninstall(); } catch { }
-            try { WindowAnimator.Uninstall(); } catch { }
-            try { WindowButtons.Stop(); } catch { }
-            try { WindowGlass.RestoreAll(); } catch { }
-            try { AppBar.RemoveAll(); } catch { }
-            try { Taskbar.Restore(); } catch { }
+            Try(WinKey.Uninstall);
+            Try(WindowAnimator.Uninstall);
+            Try(WindowButtons.Stop);
+            Try(WindowGlass.RestoreAll);
+            Try(AppBar.RemoveAll);
+            Try(Taskbar.Restore);
+        }
+
+        /// <summary>Run one independent step, logging (not propagating) any failure.</summary>
+        private static void Try(Action a)
+        {
+            try { a(); } catch (Exception ex) { Log(ex); }
         }
 
         public static void Log(object o)

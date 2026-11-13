@@ -61,6 +61,10 @@ namespace MacLook
     {
         private const uint EVENT_SYSTEM_FOREGROUND = 3, EVENT_SYSTEM_MOVESIZEEND = 0x0B, EVENT_SYSTEM_MINIMIZESTART = 0x16, EVENT_OBJECT_HIDE = 0x8003;
         private const uint WINEVENT_SKIPOWNPROCESS = 2;
+        private const uint PW_RENDERFULLCONTENT = 2;
+        private const int DWMWA_CAPTION_BUTTON_BOUNDS = 5, GWL_STYLE = -16;
+        private const long WS_CHILD = 0x40000000, WS_EX_TRANSPARENT = 0x20;
+        private const int LaunchWatchMs = 8000, CloseSnapshotMaxAgeSec = 60;
 
         private static Native.WinEventDelegate proc;
         private static readonly List<IntPtr> hooks = new List<IntPtr>();
@@ -76,6 +80,7 @@ namespace MacLook
             proc = OnEvent;
             foreach (var ev in new[] { EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MINIMIZESTART, EVENT_OBJECT_HIDE })
                 hooks.Add(Native.SetWinEventHook(ev, ev, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS));
+            InstallOpenAnimation();
             ApplySystemAnimation();
         }
 
@@ -83,6 +88,8 @@ namespace MacLook
         {
             foreach (var h in hooks) if (h != IntPtr.Zero) Native.UnhookWinEvent(h);
             hooks.Clear();
+            UninstallOpenAnimation();
+            StopLaunchWatch();
             RestoreSystemAnimation();
         }
 
@@ -93,8 +100,14 @@ namespace MacLook
         public static void ApplySystemAnimation()
         {
             var ai = new Native.ANIMATIONINFO { cbSize = (uint)Marshal.SizeOf(typeof(Native.ANIMATIONINFO)) };
+            // The original value is remembered on disk, so a crash or forced close can't make "off" look original.
+            if (originalMinAnimate < 0 && Settings.OriginalMinAnimate >= 0) originalMinAnimate = Settings.OriginalMinAnimate;
             if (originalMinAnimate < 0 && Native.SystemParametersInfoAnim(Native.SPI_GETANIMATION, ai.cbSize, ref ai, 0))
+            {
                 originalMinAnimate = ai.iMinAnimate;
+                Settings.OriginalMinAnimate = originalMinAnimate;
+                try { Settings.Save(); } catch (Exception ex) { Program.Log(ex); }
+            }
             if (originalMinAnimate < 0) return;
             ai.iMinAnimate = Settings.AnimateWindows ? 0 : originalMinAnimate;
             Native.SystemParametersInfoAnim(Native.SPI_SETANIMATION, ai.cbSize, ref ai, 0);
@@ -102,10 +115,17 @@ namespace MacLook
 
         private static void RestoreSystemAnimation()
         {
+            if (originalMinAnimate < 0) originalMinAnimate = Settings.OriginalMinAnimate;
             if (originalMinAnimate < 0) return;
             var ai = new Native.ANIMATIONINFO { cbSize = (uint)Marshal.SizeOf(typeof(Native.ANIMATIONINFO)), iMinAnimate = originalMinAnimate };
             Native.SystemParametersInfoAnim(Native.SPI_SETANIMATION, ai.cbSize, ref ai, 0);
+            originalMinAnimate = -1;
+            Settings.OriginalMinAnimate = -1;
+            try { Settings.Save(); } catch (Exception ex) { Program.Log(ex); }
         }
+
+        /// <summary>For MacLook.exe --restore after a crash: put Windows' minimize animation back.</summary>
+        public static void RestoreAfterCrash() { RestoreSystemAnimation(); }
 
         private static bool IsAppWindow(IntPtr h)
         {
@@ -118,9 +138,10 @@ namespace MacLook
 
         private static void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
         {
-            if (!Settings.AnimateWindows || idObject != 0 || hwnd == IntPtr.Zero) return;
+            // Called from inside the message loop: nothing may escape from here.
             try
             {
+                if (!Settings.AnimateWindows || idObject != 0 || hwnd == IntPtr.Zero) return;
                 if (ev == EVENT_SYSTEM_FOREGROUND || ev == EVENT_SYSTEM_MOVESIZEEND)
                 {
                     IntPtr h = hwnd;
@@ -138,7 +159,7 @@ namespace MacLook
                 }
                 else if (ev == EVENT_OBJECT_HIDE)
                 {
-                    if (hwnd != snapHwnd || snap == null || (DateTime.Now - snapTime).TotalSeconds > 60) return;
+                    if (hwnd != snapHwnd || snap == null || (DateTime.Now - snapTime).TotalSeconds > CloseSnapshotMaxAgeSec) return;
                     snapHwnd = IntPtr.Zero;
                     PlayClose(snap, snapRect);
                 }
@@ -149,11 +170,15 @@ namespace MacLook
         /// <summary>Keep a fresh picture of the active window, so closing it can be animated after it's gone.</summary>
         public static void Snapshot(IntPtr h)
         {
-            if (!Settings.AnimateWindows || h != Native.GetForegroundWindow() || !IsAppWindow(h) || Native.IsIconic(h)) return;
-            Rect r;
-            var img = Capture(h, out r);
-            if (img == null) return;
-            snapHwnd = h; snap = img; snapRect = r; snapTime = DateTime.Now;
+            try
+            {
+                if (!Settings.AnimateWindows || h != Native.GetForegroundWindow() || !IsAppWindow(h) || Native.IsIconic(h)) return;
+                Rect r;
+                var img = Capture(h, out r);
+                if (img == null) return;
+                snapHwnd = h; snap = img; snapRect = r; snapTime = DateTime.Now;
+            }
+            catch (Exception ex) { Program.Log(ex); }
         }
 
         public static void RefreshForeground() { Snapshot(Native.GetForegroundWindow()); }
@@ -161,8 +186,9 @@ namespace MacLook
         private static BitmapSource Capture(IntPtr h, out Rect frame)
         {
             frame = Rect.Empty;
+            if (h == IntPtr.Zero || !Native.IsWindow(h)) return null;
             Native.RECT wr, fr = Native.FrameRect(h);
-            Native.GetWindowRect(h, out wr);
+            if (!Native.GetWindowRect(h, out wr)) return null;
             int w = wr.Right - wr.Left, hh = wr.Bottom - wr.Top;
             if (w < 40 || hh < 40 || w > 8000 || hh > 8000) return null;
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
@@ -173,21 +199,25 @@ namespace MacLook
                 using (var g = System.Drawing.Graphics.FromImage(bmp))
                 {
                     IntPtr dc = g.GetHdc();
-                    bool ok = Native.PrintWindow(h, dc, 2);   // PW_RENDERFULLCONTENT
-                    g.ReleaseHdc(dc);
+                    bool ok;
+                    try { ok = Native.PrintWindow(h, dc, PW_RENDERFULLCONTENT); }
+                    finally { g.ReleaseHdc(dc); }
                     if (!ok) return null;
                     // The picture comes straight from the app, so it still has Windows' own buttons:
                     // paint the Mac ones over them, exactly like the live overlay does.
                     try { PaintMacButtons(g, bmp, h); } catch (Exception ex) { Program.Log(ex); }
                 }
+                // Keep just the visible frame (no invisible resize borders), clipped to what was captured.
                 int cx = Math.Max(0, fr.Left - wr.Left), cy = Math.Max(0, fr.Top - wr.Top);
-                int cw = Math.Min(w - cx, fr.Right - fr.Left), ch = Math.Min(hh - cy, fr.Bottom - fr.Top);
+                int cw = Math.Min(w, fr.Right - wr.Left) - cx, ch = Math.Min(hh, fr.Bottom - wr.Top) - cy;
                 if (cw < 20 || ch < 20) return null;
                 var data = bmp.LockBits(new System.Drawing.Rectangle(cx, cy, cw, ch), System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                var src = BitmapSource.Create(cw, ch, 96, 96, PixelFormats.Bgr32, null, data.Scan0, data.Stride * ch, data.Stride);
-                bmp.UnlockBits(data);
+                BitmapSource src;
+                try { src = BitmapSource.Create(cw, ch, 96, 96, PixelFormats.Bgr32, null, data.Scan0, data.Stride * ch, data.Stride); }
+                finally { bmp.UnlockBits(data); }
                 src.Freeze();
-                frame = new Rect(fr.Left, fr.Top, cw, ch);
+                // Screen position of the pixels actually kept (not the frame's, which may start outside the capture).
+                frame = new Rect(wr.Left + cx, wr.Top + cy, cw, ch);
                 return src;
             }
         }
@@ -207,33 +237,32 @@ namespace MacLook
         {
             if (Settings.WindowButtons != "replace") return;
             Native.RECT cb;
-            if (Native.DwmGetWindowAttribute(h, 5, out cb, 16) != 0 || cb.Right - cb.Left < 20 || cb.Bottom - cb.Top < 10) return;
+            if (Native.DwmGetWindowAttribute(h, DWMWA_CAPTION_BUTTON_BOUNDS, out cb, 16) != 0 || cb.Right - cb.Left < 20 || cb.Bottom - cb.Top < 10) return;
             float s;
             using (var sg = System.Drawing.Graphics.FromHwnd(IntPtr.Zero)) s = sg.DpiX / 96f;
             int x = Math.Max(0, cb.Left), y = Math.Max(0, cb.Top);
             int w = Math.Min(bmp.Width - x, cb.Right - cb.Left), hh = Math.Min(bmp.Height - y, cb.Bottom - cb.Top);
             if (w <= 0 || hh <= 0) return;
 
-            // Title bar colour: most common of a few pixels just left of the buttons.
-            var counts = new Dictionary<int, int>();
-            foreach (int ox in new[] { 4, 16, 34 })
-                foreach (int oy in new[] { -8, 0, 8 })
-                {
-                    int px = Math.Max(0, x - (int)(ox * s)), py = Math.Max(0, Math.Min(bmp.Height - 1, y + hh / 2 + (int)(oy * s)));
-                    int c = bmp.GetPixel(px, py).ToArgb() | unchecked((int)0xFF000000);
-                    int n; counts.TryGetValue(c, out n); counts[c] = n + 1;
-                }
-            int best = counts.OrderByDescending(kv => kv.Value).First().Key;
-            using (var br = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(best)))
+            // Title bar colour, sampled the same way the live overlay does (points clamped into the picture).
+            int maxX = bmp.Width - 1, maxY = bmp.Height - 1;
+            int rgb;
+            MacButtons.SampleTitleBar(x, y + hh / 2, s, (int px, int py, out int c) =>
+            {
+                c = bmp.GetPixel(Math.Max(0, Math.Min(maxX, px)), Math.Max(0, Math.Min(maxY, py))).ToArgb();
+                return true;
+            }, out rgb);
+            using (var br = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(rgb | unchecked((int)0xFF000000))))
                 g.FillRectangle(br, x, y, w, hh);
 
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            float d = 12 * s, gap = 8 * s, right = x + w - 14 * s, top = y + hh / 2f - d / 2;
-            var colors = new[] { System.Drawing.Color.FromArgb(0xFF, 0x5F, 0x57), System.Drawing.Color.FromArgb(0xFE, 0xBC, 0x2E), System.Drawing.Color.FromArgb(0x28, 0xC8, 0x40) };
+            float d = (float)(MacButtons.Diameter * s), gap = (float)(MacButtons.Gap * s);
+            float right = x + w - (float)(MacButtons.RightMargin * s), top = y + hh / 2f - d / 2;
             for (int i = 0; i < 3; i++)
             {
                 float left = right - (3 - i) * d - (2 - i) * gap;
-                using (var br = new System.Drawing.SolidBrush(colors[i])) g.FillEllipse(br, left, top, d, d);
+                var fill = MacButtons.Fill[i];
+                using (var br = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(fill.R, fill.G, fill.B))) g.FillEllipse(br, left, top, d, d);
             }
         }
 
@@ -260,10 +289,10 @@ namespace MacLook
             if (showHook == IntPtr.Zero)
             {
                 showProc = OnShow;
-                showHook = Native.SetWinEventHook(0x8002, 0x8002, IntPtr.Zero, showProc, 0, 0, WINEVENT_SKIPOWNPROCESS);
+                showHook = Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, showProc, 0, 0, WINEVENT_SKIPOWNPROCESS);
             }
             var at = launchAt;
-            Launcher.Later(8000, () => { if (launchAt == at) StopLaunchWatch(); });
+            Launcher.Later(LaunchWatchMs, () => { if (launchAt == at) StopLaunchWatch(); });
         }
 
         private static void StopLaunchWatch()
@@ -271,19 +300,24 @@ namespace MacLook
             if (showHook != IntPtr.Zero) Native.UnhookWinEvent(showHook);
             showHook = IntPtr.Zero;
             launchBg = null;
+            launchKnown = null;
         }
 
         private static void OnShow(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
         {
-            if (idObject != 0 || launchBg == null || launchKnown == null || launchKnown.Contains(hwnd)) return;
-            if (!IsAppWindow(hwnd) || Native.IsIconic(hwnd)) return;
-            var r = Native.FrameRect(hwnd);
-            if (r.Right - r.Left < 160 || r.Bottom - r.Top < 120) return;
-            var bg = launchBg;
-            var from = launchFrom;
-            StopLaunchWatch();
+            // Called from inside the message loop: nothing may escape from here.
             try
             {
+                if (idObject != 0 || hwnd == IntPtr.Zero || launchBg == null || launchKnown == null || launchKnown.Contains(hwnd)) return;
+                // EVENT_OBJECT_SHOW also fires for child controls of windows that are already open.
+                if ((Native.GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64() & WS_CHILD) != 0) return;
+                if (!IsAppWindow(hwnd) || Native.IsIconic(hwnd)) return;
+                var r = Native.FrameRect(hwnd);
+                if (r.Right - r.Left < 160 || r.Bottom - r.Top < 120) return;
+                var bg = launchBg;
+                var from = launchFrom;
+                StopLaunchWatch();
+
                 // Cover the new window right away with what was behind it, then grow its picture from the icon.
                 var to = new Rect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
                 var o = new OpenOverlay(bg, from, to);
@@ -291,23 +325,29 @@ namespace MacLook
                 IntPtr h = hwnd;
                 Launcher.Later(110, () =>
                 {
-                    Rect actual;
-                    var img = Capture(h, out actual);
+                    // Play(null) still fades the cover away: it must never be left over the new window.
+                    BitmapSource img = null;
+                    try { Rect actual; img = Capture(h, out actual); }
+                    catch (Exception ex) { Program.Log(ex); }
                     o.Play(img);
                 });
             }
             catch (Exception ex) { Program.Log(ex); }
         }
 
-        private class OpenOverlay : Window
+        /// <summary>
+        /// Base of the animation overlays: a click-through, never-focused, topmost window covering both
+        /// rectangles (physical pixels). Its frame loop is always unhooked, and Smooth released, however
+        /// the animation ends: finished, failed, or the window closed underneath it.
+        /// </summary>
+        private abstract class FxOverlay : Window
         {
-            private readonly Rect from, to, area;
-            private readonly Image cover = new Image { Stretch = Stretch.Fill };
-            private readonly Image win = new Image { Stretch = Stretch.Fill, Opacity = 0 };
+            protected readonly Rect from, to, area;
+            protected double scale = 1;
             private DateTime start;
-            private double scale = 1;
+            private bool running;
 
-            public OpenOverlay(Pix bg, Rect from, Rect to)
+            protected FxOverlay(Rect from, Rect to)
             {
                 this.from = from; this.to = to;
                 var u = Rect.Union(from, to);
@@ -315,46 +355,123 @@ namespace MacLook
                 area = u;
                 WindowStyle = WindowStyle.None; AllowsTransparency = true; Background = Brushes.Transparent;
                 ShowInTaskbar = false; ShowActivated = false; Topmost = true; ResizeMode = ResizeMode.NoResize;
-                cover.Source = Crop(bg, to);
-                var canvas = new Canvas();
-                canvas.Children.Add(cover);
-                canvas.Children.Add(win);
-                Content = canvas;
                 SourceInitialized += (s, e) =>
                 {
                     var h = new WindowInteropHelper(this).Handle;
                     scale = HwndSource.FromHwnd(h).CompositionTarget.TransformToDevice.M11;
                     long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
-                    Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex | 0x20 | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
+                    // Click-through, never focused, not in Alt+Tab.
+                    Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex | WS_EX_TRANSPARENT | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
                     Left = area.X / scale; Top = area.Y / scale; Width = area.Width / scale; Height = area.Height / scale;
-                    Canvas.SetLeft(cover, (to.X - area.X) / scale); Canvas.SetTop(cover, (to.Y - area.Y) / scale);
-                    cover.Width = to.Width / scale; cover.Height = to.Height / scale;
+                    OnPlaced();
                 };
             }
 
-            private static BitmapSource Crop(Pix p, Rect r)
+            /// <summary>The window has its handle, DPI scale and position.</summary>
+            protected virtual void OnPlaced() { }
+
+            /// <summary>Draws one frame, ms after the start; returns false once the animation is over.</summary>
+            protected abstract bool Frame(double ms);
+
+            /// <summary>The animation ran to the end.</summary>
+            protected virtual void Finished() { Close(); }
+
+            /// <summary>Show, draw the first frame, then animate.</summary>
+            public void Run()
             {
-                int x = Math.Max(0, (int)r.X - p.X), y = Math.Max(0, (int)r.Y - p.Y);
-                int w = Math.Min(p.W - x, (int)r.Width), h = Math.Min(p.H - y, (int)r.Height);
+                Show();
+                if (!Frame(0)) { Finished(); return; }
+                StartFrames();
+            }
+
+            protected void StartFrames()
+            {
+                start = DateTime.Now;
+                if (running) return;
+                running = true;
+                CompositionTarget.Rendering += OnRendering; MacLook.Smooth.Begin();
+            }
+
+            private void StopFrames()
+            {
+                if (!running) return;
+                running = false;
+                CompositionTarget.Rendering -= OnRendering; MacLook.Smooth.End();
+            }
+
+            private void OnRendering(object sender, EventArgs e)
+            {
+                bool more;
+                try { more = Frame((DateTime.Now - start).TotalMilliseconds); }
+                catch (Exception ex)
+                {
+                    Program.Log(ex);
+                    StopFrames();
+                    try { Close(); } catch { }
+                    return;
+                }
+                if (more) return;
+                StopFrames();
+                Finished();
+            }
+
+            protected override void OnClosed(EventArgs e)
+            {
+                StopFrames();
+                base.OnClosed(e);
+            }
+        }
+
+        private class OpenOverlay : FxOverlay
+        {
+            private const double Duration = 300;
+            private readonly Image cover = new Image { Stretch = Stretch.Fill };
+            private readonly Image win = new Image { Stretch = Stretch.Fill, Opacity = 0 };
+            private readonly Rect coverRect;
+            private bool finishing;
+
+            public OpenOverlay(Pix bg, Rect from, Rect to) : base(from, to)
+            {
+                cover.Source = Crop(bg, to, out coverRect);
+                var canvas = new Canvas();
+                canvas.Children.Add(cover);
+                canvas.Children.Add(win);
+                Content = canvas;
+            }
+
+            protected override void OnPlaced()
+            {
+                if (coverRect.IsEmpty) return;
+                Canvas.SetLeft(cover, (coverRect.X - area.X) / scale); Canvas.SetTop(cover, (coverRect.Y - area.Y) / scale);
+                cover.Width = coverRect.Width / scale; cover.Height = coverRect.Height / scale;
+            }
+
+            /// <summary>The part of the screen picture under r (r may reach past the captured screen).</summary>
+            private static BitmapSource Crop(Pix p, Rect r, out Rect got)
+            {
+                got = Rect.Empty;
+                int x0 = Math.Max(p.X, (int)r.X), y0 = Math.Max(p.Y, (int)r.Y);
+                int x1 = Math.Min(p.X + p.W, (int)r.Right), y1 = Math.Min(p.Y + p.H, (int)r.Bottom);
+                int w = x1 - x0, h = y1 - y0;
                 if (w <= 0 || h <= 0) return null;
                 var px = new int[w * h];
-                for (int j = 0; j < h; j++) Array.Copy(p.D, (y + j) * p.W + x, px, j * w, w);
+                for (int j = 0; j < h; j++) Array.Copy(p.D, (y0 - p.Y + j) * p.W + (x0 - p.X), px, j * w, w);
                 var bs = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgr32, null, px, w * 4);
                 bs.Freeze();
+                got = new Rect(x0, y0, w, h);
                 return bs;
             }
 
             public void Play(BitmapSource img)
             {
-                if (img == null) { Finish(); return; }
+                if (img == null) { Finished(); return; }
                 win.Source = img;
-                start = DateTime.Now;
-                CompositionTarget.Rendering += OnFrame; MacLook.Smooth.Begin();
+                StartFrames();
             }
 
-            private void OnFrame(object sender, EventArgs e)
+            protected override bool Frame(double ms)
             {
-                double p = Math.Min(1, (DateTime.Now - start).TotalMilliseconds / 300.0);
+                double p = Math.Min(1, ms / Duration);
                 const double s = 1.25;   // gentle overshoot, like a spring
                 double t = p - 1, k = t * t * ((s + 1) * t + s) + 1;
                 double x = from.X + (to.X - from.X) * k, y = from.Y + (to.Y - from.Y) * k;
@@ -362,14 +479,165 @@ namespace MacLook
                 Canvas.SetLeft(win, (x - area.X) / scale); Canvas.SetTop(win, (y - area.Y) / scale);
                 win.Width = Math.Max(1, w / scale); win.Height = Math.Max(1, h / scale);
                 win.Opacity = Math.Min(1, p * 3);
-                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; MacLook.Smooth.End(); Finish(); }
+                return p < 1;
             }
 
-            private void Finish()
+            /// <summary>Fade the whole overlay out over the real window, then close.</summary>
+            protected override void Finished()
             {
+                if (finishing) return;
+                finishing = true;
                 var a = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(90));
                 a.Completed += (s, e) => Close();
                 BeginAnimation(OpacityProperty, a);
+            }
+        }
+
+        // ------------------------------------------------------------------ every new window opens with a zoom
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+        private const long WS_EX_LAYERED = 0x80000;
+        private const uint LWA_ALPHA = 2;
+        private const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
+        private const int OpenCaptureDelayMs = 70, OpenMaxHiddenMs = 900;
+
+        private static IntPtr anyShowHook;
+        private static Native.WinEventDelegate anyShowProc;
+        private static readonly Dictionary<IntPtr, long> opening = new Dictionary<IntPtr, long>();   // hwnd -> its original ex-style
+        private static readonly HashSet<IntPtr> seen = new HashSet<IntPtr>();
+
+        private static void InstallOpenAnimation()
+        {
+            if (anyShowHook != IntPtr.Zero) return;
+            anyShowProc = OnAnyShow;
+            anyShowHook = Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, anyShowProc, 0, 0, WINEVENT_SKIPOWNPROCESS);
+        }
+
+        private static void UninstallOpenAnimation()
+        {
+            if (anyShowHook != IntPtr.Zero) Native.UnhookWinEvent(anyShowHook);
+            anyShowHook = IntPtr.Zero;
+            foreach (var h in opening.Keys.ToList()) Reveal(h);   // never leave a window invisible
+        }
+
+        /// <summary>
+        /// A window appeared for the first time: keep it invisible for a moment, take its picture (with the
+        /// Mac buttons painted in), zoom and fade that picture in like macOS, then reveal the real window.
+        /// </summary>
+        private static void OnAnyShow(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+        {
+            try
+            {
+                if (!Settings.AnimateWindows || idObject != 0 || hwnd == IntPtr.Zero) return;
+                if (launchBg != null) return;   // an app launched from the Dock / Launchpad: that animation handles it
+                if ((Native.GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64() & WS_CHILD) != 0) return;
+                if (opening.ContainsKey(hwnd) || !IsAppWindow(hwnd) || Native.IsIconic(hwnd)) return;
+                if (seen.Count > 2000) seen.RemoveWhere(x => !Native.IsWindow(x));
+                if (!seen.Add(hwnd)) return;   // only the first time a window opens
+                if (Native.GetClass(hwnd) == "ApplicationFrameWindow") return;   // Store apps draw through a layer that can't be hidden this way
+
+                var r = Native.FrameRect(hwnd);
+                if (r.Right - r.Left < 160 || r.Bottom - r.Top < 120) return;
+                var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+                if (r.Left <= b.Left && r.Top <= b.Top && r.Right >= b.Right && r.Bottom >= b.Bottom) return;   // fullscreen / games
+
+                long ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
+                if ((ex & WS_EX_LAYERED) != 0) return;   // the app manages its own transparency: leave it alone
+
+                int on = 1;
+                Native.DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, ref on, 4);   // replaces Windows' own open animation
+                Native.SetWindowLongPtr(hwnd, Native.GWL_EXSTYLE, new IntPtr(ex | WS_EX_LAYERED));
+                SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
+                opening[hwnd] = ex;
+
+                IntPtr h = hwnd;
+                Launcher.Later(OpenMaxHiddenMs, () => Reveal(h));   // safety net: never stays hidden
+                Launcher.Later(OpenCaptureDelayMs, () =>
+                {
+                    try
+                    {
+                        if (!opening.ContainsKey(h)) return;
+                        Rect actual;
+                        var img = Capture(h, out actual);
+                        if (img == null) { Reveal(h); return; }
+                        var from = new Rect(actual.X + actual.Width * 0.05, actual.Y + actual.Height * 0.05, actual.Width * 0.9, actual.Height * 0.9);
+                        var o = new PopOverlay(img, from, actual, () => Reveal(h));
+                        o.Run();
+                    }
+                    catch (Exception e2) { Program.Log(e2); Reveal(h); }
+                });
+            }
+            catch (Exception e) { Program.Log(e); }
+        }
+
+        /// <summary>Make a window visible again exactly as it was (idempotent).</summary>
+        private static void Reveal(IntPtr h)
+        {
+            long ex;
+            if (!opening.TryGetValue(h, out ex)) return;
+            opening.Remove(h);
+            try
+            {
+                if (!Native.IsWindow(h)) return;
+                SetLayeredWindowAttributes(h, 0, 255, LWA_ALPHA);
+                long cur = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+                if ((ex & WS_EX_LAYERED) == 0) Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(cur & ~WS_EX_LAYERED));
+                if (Settings.WindowButtons == "off")
+                {
+                    int off = 0;
+                    Native.DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, ref off, 4);
+                }
+            }
+            catch (Exception e) { Program.Log(e); }
+        }
+
+        /// <summary>The new window's picture grows from 90% to full size while fading in, with a soft spring.</summary>
+        private class PopOverlay : FxOverlay
+        {
+            private const double Duration = 230;
+            private readonly Image image;
+            private readonly Action done;
+            private bool finishing;
+
+            public PopOverlay(BitmapSource img, Rect from, Rect to, Action done) : base(from, to)
+            {
+                this.done = done;
+                image = new Image { Source = img, Stretch = Stretch.Fill, Opacity = 0 };
+                RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+                var canvas = new Canvas();
+                canvas.Children.Add(image);
+                Content = canvas;
+            }
+
+            protected override bool Frame(double ms)
+            {
+                double p = Math.Min(1, ms / Duration);
+                const double s = 1.2;
+                double t = p - 1, k = t * t * ((s + 1) * t + s) + 1;   // back-ease out
+                double x = from.X + (to.X - from.X) * k, y = from.Y + (to.Y - from.Y) * k;
+                double w = from.Width + (to.Width - from.Width) * k, h = from.Height + (to.Height - from.Height) * k;
+                Canvas.SetLeft(image, (x - area.X) / scale);
+                Canvas.SetTop(image, (y - area.Y) / scale);
+                image.Width = Math.Max(1, w / scale);
+                image.Height = Math.Max(1, h / scale);
+                image.Opacity = Math.Min(1, p * 2.2);
+                return p < 1;
+            }
+
+            protected override void OnClosed(EventArgs e)
+            {
+                // However it ends, the real window comes back.
+                if (!finishing && done != null) done();
+                base.OnClosed(e);
+            }
+
+            /// <summary>Show the real window under the finished picture, then remove the picture a frame later.</summary>
+            protected override void Finished()
+            {
+                if (finishing) return;
+                finishing = true;
+                if (done != null) done();
+                Launcher.Later(32, () => { try { Close(); } catch { } });
             }
         }
 
@@ -386,52 +654,23 @@ namespace MacLook
             catch (Exception ex) { Program.Log(ex); }
         }
 
-        private class ZoomOverlay : Window
+        private class ZoomOverlay : FxOverlay
         {
-            private readonly Rect from, to, area;
+            private const double Duration = 260;
             private readonly Image image;
-            private DateTime start;
-            private double scale = 1;
 
-            public ZoomOverlay(BitmapSource img, Rect from, Rect to)
+            public ZoomOverlay(BitmapSource img, Rect from, Rect to) : base(from, to)
             {
-                this.from = from; this.to = to;
-                var u = Rect.Union(from, to);
-                u.Inflate(4, 4);
-                area = u;
-                WindowStyle = WindowStyle.None; AllowsTransparency = true; Background = Brushes.Transparent;
-                ShowInTaskbar = false; ShowActivated = false; Topmost = true; ResizeMode = ResizeMode.NoResize;
                 image = new Image { Source = img, Stretch = Stretch.Fill };
                 var canvas = new Canvas();
                 canvas.Children.Add(image);
                 Content = canvas;
-                SourceInitialized += (s, e) =>
-                {
-                    var h = new WindowInteropHelper(this).Handle;
-                    scale = HwndSource.FromHwnd(h).CompositionTarget.TransformToDevice.M11;
-                    long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
-                    Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex | 0x20 | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
-                    Left = area.X / scale; Top = area.Y / scale; Width = area.Width / scale; Height = area.Height / scale;
-                };
             }
 
-            public void Run()
+            protected override bool Frame(double ms)
             {
-                Show();
-                start = DateTime.Now;
-                Frame(0);
-                CompositionTarget.Rendering += OnFrame; MacLook.Smooth.Begin();
-            }
-
-            private void OnFrame(object sender, EventArgs e)
-            {
-                double p = (DateTime.Now - start).TotalMilliseconds / 260.0;
-                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; MacLook.Smooth.End(); Close(); return; }
-                Frame(p);
-            }
-
-            private void Frame(double p)
-            {
+                double p = ms / Duration;
+                if (p >= 1) return false;
                 double k = 1 - Math.Pow(1 - p, 3);
                 double x = from.X + (to.X - from.X) * k, y = from.Y + (to.Y - from.Y) * k;
                 double w = from.Width + (to.Width - from.Width) * k, h = from.Height + (to.Height - from.Height) * k;
@@ -440,34 +679,22 @@ namespace MacLook
                 image.Width = Math.Max(1, w / scale);
                 image.Height = Math.Max(1, h / scale);
                 image.Opacity = p > 0.8 ? (1 - p) / 0.2 : 1;
+                return true;
             }
         }
 
-        private class GenieOverlay : Window
+        private class GenieOverlay : FxOverlay
         {
             private const int Strips = 48;
-            private readonly BitmapSource img;
-            private readonly Rect from, to, area;
+            private const double GenieDuration = 520, CloseDuration = 210;
             private readonly bool close;
             private readonly Canvas canvas = new Canvas();
             private readonly Image[] strips;
-            private Image whole;
-            private DateTime start;
-            private double scale = 1;
+            private readonly Image whole;
 
-            public GenieOverlay(BitmapSource img, Rect from, Rect to, bool close)
+            public GenieOverlay(BitmapSource img, Rect from, Rect to, bool close) : base(from, to)
             {
-                this.img = img; this.from = from; this.to = to; this.close = close;
-                var u = Rect.Union(from, to);
-                u.Inflate(4, 4);
-                area = u;
-                WindowStyle = WindowStyle.None;
-                AllowsTransparency = true;
-                Background = Brushes.Transparent;
-                ShowInTaskbar = false;
-                ShowActivated = false;
-                Topmost = true;
-                ResizeMode = ResizeMode.NoResize;
+                this.close = close;
                 Content = canvas;
                 if (close)
                 {
@@ -485,42 +712,15 @@ namespace MacLook
                         canvas.Children.Add(strips[i]);
                     }
                 }
-                SourceInitialized += (s, e) =>
-                {
-                    var hwnd = new WindowInteropHelper(this).Handle;
-                    scale = HwndSource.FromHwnd(hwnd).CompositionTarget.TransformToDevice.M11;
-                    long ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
-                    // Click-through, never focused, not in Alt+Tab.
-                    Native.SetWindowLongPtr(hwnd, Native.GWL_EXSTYLE, new IntPtr(ex | 0x20 | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
-                    Left = area.X / scale; Top = area.Y / scale; Width = area.Width / scale; Height = area.Height / scale;
-                };
             }
 
-            public void Run()
-            {
-                Show();
-                start = DateTime.Now;
-                Frame(0);
-                CompositionTarget.Rendering += OnFrame; MacLook.Smooth.Begin();
-            }
-
-            private void OnFrame(object sender, EventArgs e)
-            {
-                double p = (DateTime.Now - start).TotalMilliseconds / (close ? 210.0 : 520.0);
-                if (p >= 1)
-                {
-                    CompositionTarget.Rendering -= OnFrame; MacLook.Smooth.End();
-                    Close();
-                    return;
-                }
-                Frame(p);
-            }
-
-            private static double Smooth(double t) { t = Math.Max(0, Math.Min(1, t)); return t * t * (3 - 2 * t); }
+            private static double SmoothStep(double t) { t = Math.Max(0, Math.Min(1, t)); return t * t * (3 - 2 * t); }
             private static double Lerp(double a, double b, double t) { return a + (b - a) * t; }
 
-            private void Frame(double p)
+            protected override bool Frame(double ms)
             {
+                double p = ms / (close ? CloseDuration : GenieDuration);
+                if (p >= 1) return false;
                 if (close)
                 {
                     // Shrink a little toward the centre and fade, like closing on a Mac.
@@ -531,7 +731,7 @@ namespace MacLook
                     Canvas.SetTop(whole, (from.Y + (from.Height - h) / 2 - area.Y) / scale);
                     whole.Width = w / scale; whole.Height = h / scale;
                     whole.Opacity = 1 - k;
-                    return;
+                    return true;
                 }
 
                 // Genie: the bottom of the window gets sucked into the dock icon first, the top follows,
@@ -539,7 +739,7 @@ namespace MacLook
                 for (int i = 0; i < Strips; i++)
                 {
                     double y0 = i / (double)Strips, y1 = (i + 1) / (double)Strips;
-                    double q0 = Smooth(p * 1.6 - (1 - y0) * 0.6), q1 = Smooth(p * 1.6 - (1 - y1) * 0.6);
+                    double q0 = SmoothStep(p * 1.6 - (1 - y0) * 0.6), q1 = SmoothStep(p * 1.6 - (1 - y1) * 0.6);
                     double top = Lerp(from.Top + y0 * from.Height, to.Top + y0 * to.Height, q0);
                     double bottom = Lerp(from.Top + y1 * from.Height, to.Top + y1 * to.Height, q1);
                     double q = (q0 + q1) / 2;
@@ -551,6 +751,7 @@ namespace MacLook
                     s.Height = Math.Max(0.5, (bottom - top) / scale + 0.6);
                     s.Opacity = p > 0.85 ? (1 - p) / 0.15 : 1;
                 }
+                return true;
             }
         }
     }

@@ -6,7 +6,6 @@ using System.Net.NetworkInformation;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -18,19 +17,22 @@ namespace MacLook
     internal class MenuBarWindow : Window
     {
         public const double BarHeight = 26;
-        private const int HotkeyId = 0x4D4C;
+        private const int SpotlightHotkeyId = 0x4D4C, MissionHotkeyId = 0x4D4D;
+        private const int ShotHotkey = 0x4E30, ForceQuitHotkey = 0x4E33;   // Ctrl+Shift+3/4/5 use ShotHotkey + 0..2
+        private const uint ModShift = 0x4;
+        private const uint VkUp = 0x26, VkEscape = 0x1B;
 
         private IntPtr hwnd;
         private double scale = 1;
         private IntPtr target;              // last foreground window that isn't ours
         private IntPtr lastForeground;
-        private string targetName = "File Explorer";
+        private const string DesktopAppName = "File Explorer";   // shown when the desktop / shell has focus
+        private string targetName = DesktopAppName;
         private TextBlock appName, clock, network;
         private DispatcherTimer fast, slow;
         private bool fullscreen;
         private uint taskbarCreatedMsg;
         private Border barGlass;
-        private const int MissionHotkeyId = 0x4D4D;
 
         public MenuBarWindow()
         {
@@ -61,7 +63,7 @@ namespace MacLook
             root.Children.Add(left);
 
             left.Children.Add(Item(Logo(), b => Open(b, LogoMenu())));
-            appName = Text("File Explorer", true);
+            appName = Text(DesktopAppName, true);
             left.Children.Add(Item(appName, b => Open(b, AppMenu())));
             left.Children.Add(Item(Text("File"), b => Open(b, FileMenu())));
             left.Children.Add(Item(Text("Edit"), b => Open(b, EditMenu())));
@@ -321,20 +323,20 @@ namespace MacLook
             var magnify = MI("Dock Magnification", null, () => { Settings.Magnify = !Settings.Magnify; Settings.Save(); });
             magnify.IsChecked = Settings.Magnify;
 
-            var reserve = MI("Automatically Hide and Show the Dock", null, () =>
+            var autoHide = MI("Automatically Hide and Show the Dock", null, () =>
             {
                 Settings.DockAutoHide = !Settings.DockAutoHide;
                 Settings.Save();
                 Program.Dock.Rebuild();
             });
-            reserve.IsChecked = Settings.DockAutoHide;
+            autoHide.IsChecked = Settings.DockAutoHide;
 
             var winKey = MI("Windows Key Opens Launchpad", null, () => { Settings.WinKeyLaunchpad = !Settings.WinKeyLaunchpad; Settings.Save(); });
             winKey.IsChecked = Settings.WinKeyLaunchpad;
 
             bool startup = false;
-            try { startup = Startup.Enabled; } catch { }
-            var login = MI("Open at Login", null, () => { try { Startup.Enabled = !Startup.Enabled; } catch { } });
+            try { startup = Startup.Enabled; } catch (Exception ex) { Program.Log(ex); }
+            var login = MI("Open at Login", null, () => { try { Startup.Enabled = !Startup.Enabled; } catch (Exception ex) { Program.Log(ex); } });
             login.IsChecked = startup;
 
             return Menu(
@@ -348,7 +350,7 @@ namespace MacLook
                 MI("Refresh Glass", null, Program.RecaptureDesktop),
                 MI("Check for Updates…", null, () => Updater.Check(true)),
                 null,
-                hide, magnify, reserve, winKey, login,
+                hide, magnify, autoHide, winKey, login,
                 null,
                 MI("Set Mac-Style Wallpaper", null, () => { try { Wallpaper.SetMacStyle(); Program.RecaptureDesktop(); } catch (Exception ex) { Program.Log(ex); } }),
                 MI("Restore Original Wallpaper", null, Wallpaper.CanRestore ? new Action(Wallpaper.Restore) : null),
@@ -403,10 +405,10 @@ namespace MacLook
             taskbarCreatedMsg = Native.RegisterWindowMessage("TaskbarCreated");
 
             Reposition();
-            if (!Native.RegisterHotKey(hwnd, HotkeyId, Native.MOD_ALT | Native.MOD_NOREPEAT, Native.VK_SPACE))
+            if (!Native.RegisterHotKey(hwnd, SpotlightHotkeyId, Native.MOD_ALT | Native.MOD_NOREPEAT, Native.VK_SPACE))
                 Program.Log("Alt+Space is already taken by another app; use the magnifier in the menu bar instead.");
             RegisterShortcuts();
-            if (!Native.RegisterHotKey(hwnd, MissionHotkeyId, Native.MOD_ALT | Native.MOD_CONTROL | Native.MOD_NOREPEAT, 0x26))
+            if (!Native.RegisterHotKey(hwnd, MissionHotkeyId, Native.MOD_ALT | Native.MOD_CONTROL | Native.MOD_NOREPEAT, VkUp))
                 Program.Log("Ctrl+Alt+Up is already taken; open Mission Control from the dock instead.");
 
             fast = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -415,7 +417,7 @@ namespace MacLook
             slow = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             slow.Tick += (s, a) => SlowTick();
             slow.Start();
-            Closed += (s, a) => { Native.UnregisterHotKey(hwnd, HotkeyId); Native.UnregisterHotKey(hwnd, MissionHotkeyId); UnregisterShortcuts(); };
+            Closed += (s, a) => { Native.UnregisterHotKey(hwnd, SpotlightHotkeyId); Native.UnregisterHotKey(hwnd, MissionHotkeyId); UnregisterShortcuts(); };
             IsVisibleChanged += (s, a) => { if (IsVisible) Dispatcher.BeginInvoke(new Action(ApplyGlass), DispatcherPriority.Loaded); };
         }
 
@@ -439,19 +441,17 @@ namespace MacLook
             t.BeginAnimation(TranslateTransform.YProperty, a);
         }
 
-        private const int ShotHotkey = 0x4E30, ForceQuitHotkey = 0x4E33;
-
         /// <summary>Ctrl+Shift+3/4/5 screenshots and Ctrl+Alt+Esc Force Quit (re-applied when Settings change).</summary>
         public void RegisterShortcuts()
         {
-            UnregisterShortcuts();
             if (hwnd == IntPtr.Zero) return;
-            uint cs = Native.MOD_CONTROL | 0x4 | Native.MOD_NOREPEAT;   // Ctrl+Shift
+            UnregisterShortcuts();
+            uint cs = Native.MOD_CONTROL | ModShift | Native.MOD_NOREPEAT;   // Ctrl+Shift
             if (Settings.ScreenshotShortcuts)
                 for (int i = 0; i < 3; i++)
                     if (!Native.RegisterHotKey(hwnd, ShotHotkey + i, cs, (uint)('3' + i)))
                         Program.Log("Ctrl+Shift+" + (3 + i) + " is already used by another app.");
-            if (Settings.ForceQuitShortcut && !Native.RegisterHotKey(hwnd, ForceQuitHotkey, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, 0x1B))
+            if (Settings.ForceQuitShortcut && !Native.RegisterHotKey(hwnd, ForceQuitHotkey, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, VkEscape))
                 Program.Log("Ctrl+Alt+Esc is already used by another app.");
         }
 
@@ -476,7 +476,7 @@ namespace MacLook
 
         private IntPtr WndProc(IntPtr h, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == Native.WM_HOTKEY && wParam.ToInt32() == HotkeyId)
+            if (msg == Native.WM_HOTKEY && wParam.ToInt32() == SpotlightHotkeyId)
             {
                 Program.Spotlight.Toggle();
                 handled = true;
@@ -525,7 +525,7 @@ namespace MacLook
                     if (WindowTracker.IsShellWindow(fg))
                     {
                         target = IntPtr.Zero;
-                        targetName = "File Explorer";
+                        targetName = DesktopAppName;
                     }
                     else
                     {
@@ -538,6 +538,9 @@ namespace MacLook
                 }
             }
 
+            // While focus is changing hands GetForegroundWindow briefly returns NULL; keep the current state
+            // then, or alt-tabbing inside a fullscreen game flashes the bars on and off.
+            if (fg == IntPtr.Zero) return;
             bool fs = IsFullscreen(fg);
             if (fs != fullscreen)
             {

@@ -30,7 +30,10 @@ namespace MacLook
 
         public string ToLine()
         {
-            return Name + " | " + Target + " | " + string.Join(",", Match) + (string.IsNullOrEmpty(Args) ? "" : " | " + Args);
+            // '|' separates fields, so a name like "Photos | Vacation" would shift every column; Args is the
+            // last field and is read back with any '|' it contains, so only the name needs cleaning.
+            string name = (Name ?? "").Replace('|', '¦').Replace('\r', ' ').Replace('\n', ' ');
+            return name + " | " + Target + " | " + string.Join(",", Match) + (string.IsNullOrEmpty(Args) ? "" : " | " + Args);
         }
     }
 
@@ -56,7 +59,8 @@ namespace MacLook
             {
                 string line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith("#")) continue;
-                var parts = line.Split('|').Select(p => p.Trim()).ToArray();
+                // At most 4 fields: anything after the third '|' belongs to the arguments.
+                var parts = line.Split(new[] { '|' }, 4).Select(p => p.Trim()).ToArray();
                 if (parts.Length < 2 || parts[1].Length == 0) continue;
                 var e = new DockEntry { Name = parts[0], Target = Environment.ExpandEnvironmentVariables(parts[1]) };
                 if (parts.Length > 2) e.Match = parts[2].Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
@@ -64,20 +68,21 @@ namespace MacLook
                 list.Add(e);
             }
             Entries = list;
-            AddBuiltinsOnce();
+            if (AddBuiltinsOnce()) SaveDock();
         }
 
-        /// <summary>Puts Launchpad and Mission Control in the dock once (users may remove them later).</summary>
-        private static void AddBuiltinsOnce()
+        /// <summary>Puts Launchpad and Mission Control in the dock once (users may remove them later).
+        /// Returns true if Entries changed and should be saved.</summary>
+        private static bool AddBuiltinsOnce()
         {
-            if (Settings.BuiltinsAdded) return;
+            if (Settings.BuiltinsAdded) return false;
             Settings.BuiltinsAdded = true;
             Settings.Save();
-            if (Entries.Any(e => e.Target.StartsWith("maclook:", StringComparison.OrdinalIgnoreCase))) return;
+            if (Entries.Any(e => e.Target.StartsWith("maclook:", StringComparison.OrdinalIgnoreCase))) return false;
             int at = Math.Min(1, Entries.Count);
             Entries.Insert(at, new DockEntry { Name = "Mission Control", Target = "maclook:missioncontrol" });
             Entries.Insert(at, new DockEntry { Name = "Launchpad", Target = "maclook:launchpad" });
-            SaveDock();
+            return true;
         }
 
         public static void SaveDock()
@@ -242,6 +247,7 @@ namespace MacLook
         // Internal
         public static string OriginalWallpaper = "";
         public static bool BuiltinsAdded = false;
+        public static int OriginalMinAnimate = -1;      // Windows' minimize-animation setting before Mac Look changed it (-1 = unchanged)
 
         private static System.Reflection.FieldInfo[] Fields
         {
@@ -251,25 +257,48 @@ namespace MacLook
         public static void Load()
         {
             if (!File.Exists(Config.SettingsFile)) return;
+            string[] lines;
+            try { lines = File.ReadAllLines(Config.SettingsFile); }
+            catch (Exception ex) { Program.Log(ex); return; }   // locked or unreadable: keep the defaults
             var ci = System.Globalization.CultureInfo.InvariantCulture;
-            foreach (var line in File.ReadAllLines(Config.SettingsFile))
+            var fields = Fields;
+            foreach (var line in lines)
             {
                 int i = line.IndexOf('=');
                 if (i <= 0) continue;
                 string k = line.Substring(0, i).Trim(), v = line.Substring(i + 1).Trim();
-                var f = Fields.FirstOrDefault(x => x.Name.Equals(k, StringComparison.OrdinalIgnoreCase));
+                var f = fields.FirstOrDefault(x => x.Name.Equals(k, StringComparison.OrdinalIgnoreCase));
                 if (f == null) continue;
-                try
+                // A malformed value leaves the field at its default instead of turning it into false / 0.
+                if (f.FieldType == typeof(bool))
                 {
-                    if (f.FieldType == typeof(bool)) f.SetValue(null, v.Equals("true", StringComparison.OrdinalIgnoreCase));
-                    else if (f.FieldType == typeof(int)) f.SetValue(null, int.Parse(v, ci));
-                    else if (f.FieldType == typeof(double)) f.SetValue(null, double.Parse(v, ci));
-                    else f.SetValue(null, v);
+                    bool b;
+                    if (bool.TryParse(v, out b)) f.SetValue(null, b);
                 }
-                catch { }
+                else if (f.FieldType == typeof(int))
+                {
+                    int n;
+                    if (int.TryParse(v, System.Globalization.NumberStyles.Integer, ci, out n)) f.SetValue(null, n);
+                }
+                else if (f.FieldType == typeof(double))
+                {
+                    // Accept "1,6" from hand edits in comma-decimal locales; never read ',' as a thousands separator.
+                    double d;
+                    if (double.TryParse(v.Replace(',', '.'), System.Globalization.NumberStyles.Float, ci, out d)
+                        && !double.IsNaN(d) && !double.IsInfinity(d))
+                        f.SetValue(null, d);
+                }
+                else if (f.FieldType == typeof(string)) f.SetValue(null, v);
             }
+            // Keep hand-edited values inside the ranges the Settings sliders allow (a negative radius would throw).
             IconSize = Math.Max(32, Math.Min(96, IconSize));
             MagnifyScale = Math.Max(1.0, Math.Min(2.5, MagnifyScale));
+            DockRadius = Math.Max(0, Math.Min(48, DockRadius));
+            LaunchpadIconSize = Math.Max(40, Math.Min(160, LaunchpadIconSize));
+            GlassFrost = Math.Max(0, Math.Min(2, GlassFrost));
+            GlassTint = Math.Max(0, Math.Min(1.6, GlassTint));
+            GlassRefraction = Math.Max(0, Math.Min(2.5, GlassRefraction));
+            GlassShine = Math.Max(0, Math.Min(2, GlassShine));
         }
 
         public static void Save()

@@ -39,7 +39,7 @@ namespace MacLook
                     Dark = v is int && (int)v == 0;
                 }
             }
-            catch { Dark = false; }
+            catch (Exception ex) { Program.Log(ex); Dark = false; }
         }
 
         /// <summary>Menu bar tint behind the acrylic blur (0xAARRGGBB).</summary>
@@ -69,7 +69,6 @@ namespace MacLook
                 r["MenuBorder"] = B("#45FFFFFF");
                 r["MenuFg"] = B("#F5F5F7");
                 r["MenuSep"] = B("#26FFFFFF");
-                r["Accent"] = B("#2F6FE4");
                 r["SpotBg"] = B("#F21F1F21");
                 r["SpotFg"] = B("#F5F5F7");
                 r["SpotDim"] = B("#8CFFFFFF");
@@ -95,7 +94,6 @@ namespace MacLook
                 r["MenuBorder"] = B("#26000000");
                 r["MenuFg"] = B("#1D1D1F");
                 r["MenuSep"] = B("#1F000000");
-                r["Accent"] = B("#3478F6");
                 r["SpotBg"] = B("#F5F3F3F5");
                 r["SpotFg"] = B("#1D1D1F");
                 r["SpotDim"] = B("#8A000000");
@@ -106,7 +104,7 @@ namespace MacLook
                 r["TrackFill"] = B("#FFFFFFFF");
                 r["Red"] = B("#FF3B30");
             }
-            r["Accent"] = B(AccentHex);
+            r["Accent"] = B(AccentHex);   // same in light and dark: the user's chosen accent colour
         }
 
         public static ResourceDictionary Styles()
@@ -117,7 +115,7 @@ namespace MacLook
   <Style TargetType='{x:Type ContextMenu}'>
     <Setter Property='OverridesDefaultStyle' Value='True'/>
     <Setter Property='HasDropShadow' Value='False'/>
-    <Setter Property='FontFamily' Value='Segoe UI Variable Text, Segoe UI'/>
+    <Setter Property='FontFamily' Value='" + UiFont + @"'/>
     <Setter Property='FontSize' Value='13'/>
     <Setter Property='Template'>
       <Setter.Value>

@@ -70,13 +70,18 @@ namespace MacLook
         private static readonly string StateFile = Path.Combine(Config.Dir, "taskbar-original-state.txt");
         public static bool Hidden { get; private set; }
 
+        private const string TrayClass = "Shell_TrayWnd", SecondaryTrayClass = "Shell_SecondaryTrayWnd";
+        private const int OBJID_WINDOW = 0;
+
+        private static bool IsTrayClass(string cls) { return cls == TrayClass || cls == SecondaryTrayClass; }
+
         private static List<IntPtr> TrayWindows()
         {
             var list = new List<IntPtr>();
-            IntPtr main = Native.FindWindow("Shell_TrayWnd", null);
+            IntPtr main = Native.FindWindow(TrayClass, null);
             if (main != IntPtr.Zero) list.Add(main);
             IntPtr h = IntPtr.Zero;
-            while ((h = Native.FindWindowEx(IntPtr.Zero, h, "Shell_SecondaryTrayWnd", null)) != IntPtr.Zero) list.Add(h);
+            while ((h = Native.FindWindowEx(IntPtr.Zero, h, SecondaryTrayClass, null)) != IntPtr.Zero) list.Add(h);
             return list;
         }
 
@@ -89,14 +94,14 @@ namespace MacLook
         private static void SetState(int state)
         {
             var d = new Native.APPBARDATA { cbSize = Marshal.SizeOf(typeof(Native.APPBARDATA)) };
-            d.hWnd = Native.FindWindow("Shell_TrayWnd", null);
+            d.hWnd = Native.FindWindow(TrayClass, null);
             d.lParam = (IntPtr)state;
             Native.SHAppBarMessage(Native.ABM_SETSTATE, ref d);
         }
 
         public static void Hide()
         {
-            if (Native.FindWindow("Shell_TrayWnd", null) == IntPtr.Zero) return;
+            if (Native.FindWindow(TrayClass, null) == IntPtr.Zero) return;
             if (!File.Exists(StateFile))
             {
                 Directory.CreateDirectory(Config.Dir);
@@ -108,7 +113,9 @@ namespace MacLook
             {
                 Native.ShowWindow(h, Native.SW_HIDE);
                 // An empty window region makes it invisible even in the instant before we re-hide it.
-                Native.SetWindowRgn(h, Native.CreateRectRgn(0, 0, 0, 0), true);
+                // The window owns the region once SetWindowRgn succeeds; otherwise it is ours to free.
+                IntPtr rgn = Native.CreateRectRgn(0, 0, 0, 0);
+                if (rgn != IntPtr.Zero && Native.SetWindowRgn(h, rgn, true) == 0) Native.DeleteObject(rgn);
             }
             Hidden = true;
             HookShowEvents();
@@ -121,25 +128,32 @@ namespace MacLook
         private static void HookShowEvents()
         {
             if (showHook != IntPtr.Zero) { Native.UnhookWinEvent(showHook); showHook = IntPtr.Zero; }
-            IntPtr tray = Native.FindWindow("Shell_TrayWnd", null);
+            IntPtr tray = Native.FindWindow(TrayClass, null);
             if (tray == IntPtr.Zero) return;
             uint pid;
             Native.GetWindowThreadProcessId(tray, out pid);
             showProc = (hook, ev, hwnd, idObject, idChild, thread, time) =>
             {
-                if (!Hidden || idObject != 0 || hwnd == IntPtr.Zero) return;
-                string cls = Native.GetClass(hwnd);
-                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") Native.ShowWindow(hwnd, Native.SW_HIDE);
+                // A WinEvent callback must never throw, and must not block on Explorer (hence ShowWindowAsync).
+                try
+                {
+                    if (!Hidden || idObject != OBJID_WINDOW || hwnd == IntPtr.Zero) return;
+                    if (IsTrayClass(Native.GetClass(hwnd))) Native.ShowWindowAsync(hwnd, Native.SW_HIDE);
+                }
+                catch (Exception ex) { Program.Log(ex); }
             };
             showHook = Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, showProc, pid, 0, 0);
         }
 
-        /// <summary>Safety net on a timer, and called the instant the Windows key goes down.</summary>
+        /// <summary>
+        /// Safety net on a timer, and called from the keyboard hook thread the instant the Windows key goes down,
+        /// so it only posts the hide: it must never wait on a busy Explorer.
+        /// </summary>
         public static void Enforce()
         {
             if (!Hidden) return;
             foreach (var h in TrayWindows())
-                if (Native.IsWindowVisible(h)) Native.ShowWindow(h, Native.SW_HIDE);
+                if (Native.IsWindowVisible(h)) Native.ShowWindowAsync(h, Native.SW_HIDE);
         }
 
         public static void Restore()
@@ -154,8 +168,10 @@ namespace MacLook
             if (File.Exists(StateFile))
             {
                 int state;
-                if (int.TryParse(File.ReadAllText(StateFile).Trim(), out state)) SetState(state);
-                try { File.Delete(StateFile); } catch { }
+                string saved = null;
+                try { saved = File.ReadAllText(StateFile).Trim(); } catch (Exception ex) { Program.Log(ex); return; }   // keep the file for next time
+                if (int.TryParse(saved, out state)) SetState(state);
+                try { File.Delete(StateFile); } catch (Exception ex) { Program.Log(ex); }
             }
         }
     }

@@ -74,6 +74,7 @@ namespace MacLook
 
         private void Layout(List<AppWindow> wins)
         {
+            ReleaseThumbs();
             canvas.Children.Clear();
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
             if (wins.Count == 0)
@@ -100,7 +101,9 @@ namespace MacLook
                 Native.PSIZE size;
                 Native.DwmQueryThumbnailSourceSize(th, out size);
                 double sw = Math.Max(1, size.x), sh = Math.Max(1, size.y);
-                double fit = Math.Min(1, Math.Min((cw - 50 * scale) / sw, (ch - 70 * scale) / sh));
+                // With very many windows a cell can be smaller than its margins: never go to zero or negative
+                // (a negative size makes new Rect() throw and would leave Mission Control half built).
+                double fit = Math.Max(0.02, Math.Min(1, Math.Min((cw - 50 * scale) / sw, (ch - 70 * scale) / sh)));
                 double tw = sw * fit, tht = sh * fit;
                 int c = i % cols, r = i / cols;
                 int inRow = Math.Min(cols, n - r * cols);
@@ -200,14 +203,19 @@ namespace MacLook
             reversing = false;
             lastHidden = DateTime.Now;
             if (animating) { CompositionTarget.Rendering -= OnFrame; Smooth.End(); animating = false; }
-            foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Handle);
-            thumbs.Clear();
+            ReleaseThumbs();
             canvas.Children.Clear();
             Hide();
             Background = Brushes.Black;
             var a = afterDismiss;
             afterDismiss = null;
             if (a != null) a();
+        }
+
+        private void ReleaseThumbs()
+        {
+            foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Handle);
+            thumbs.Clear();
         }
     }
 }

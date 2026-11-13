@@ -28,8 +28,8 @@ namespace MacLook
 
     internal static class GlassStyles
     {
-        private static uint T { get { return Theme.Dark ? 0x1C1C1Eu : 0xFFFFFFu; } }
-        private static uint P { get { return Theme.Dark ? 0x1E1E20u : 0xF6F6F8u; } }
+        private static uint BarTint { get { return Theme.Dark ? 0x1C1C1Eu : 0xFFFFFFu; } }
+        private static uint PanelTint { get { return Theme.Dark ? 0x1E1E20u : 0xF6F6F8u; } }
 
         /// <summary>Applies the user's Frost / Tint / Refraction / Shine multipliers from Settings.</summary>
         private static GlassStyle Adj(GlassStyle s)
@@ -41,37 +41,26 @@ namespace MacLook
             return s;
         }
 
-        public static GlassStyle Dock { get { return Adj(new GlassStyle { Blur = 2, Bezel = 18, Refraction = 16, Tint = T, TintAmount = Theme.Dark ? 0.20 : 0.16, Saturation = 1.5, Highlight = 0.9 }); } }
-        public static GlassStyle MenuBar { get { return Adj(new GlassStyle { Blur = 3, Bezel = 0, Refraction = 0, Tint = T, TintAmount = Theme.Dark ? 0.28 : 0.24, Saturation = 1.35, Highlight = 0.35 }); } }
-        public static GlassStyle Menu { get { return Adj(new GlassStyle { Blur = 14, Bezel = 10, Refraction = 9, Tint = P, TintAmount = 0.62, Saturation = 1.7, Highlight = 0.75 }); } }
-        public static GlassStyle Panel { get { return Adj(new GlassStyle { Blur = 18, Bezel = 16, Refraction = 12, Tint = P, TintAmount = 0.48, Saturation = 1.7, Highlight = 0.85 }); } }
-        public static GlassStyle Window { get { return Adj(new GlassStyle { Blur = 22, Bezel = 14, Refraction = 10, Tint = P, TintAmount = 0.72, Saturation = 1.6, Highlight = 0.7 }); } }
+        public static GlassStyle Dock { get { return Adj(new GlassStyle { Blur = 2, Bezel = 18, Refraction = 16, Tint = BarTint, TintAmount = Theme.Dark ? 0.20 : 0.16, Saturation = 1.5, Highlight = 0.9 }); } }
+        public static GlassStyle MenuBar { get { return Adj(new GlassStyle { Blur = 3, Bezel = 0, Refraction = 0, Tint = BarTint, TintAmount = Theme.Dark ? 0.28 : 0.24, Saturation = 1.35, Highlight = 0.35 }); } }
+        public static GlassStyle Menu { get { return Adj(new GlassStyle { Blur = 14, Bezel = 10, Refraction = 9, Tint = PanelTint, TintAmount = 0.62, Saturation = 1.7, Highlight = 0.75 }); } }
+        public static GlassStyle Panel { get { return Adj(new GlassStyle { Blur = 18, Bezel = 16, Refraction = 12, Tint = PanelTint, TintAmount = 0.48, Saturation = 1.7, Highlight = 0.85 }); } }
+        public static GlassStyle Window { get { return Adj(new GlassStyle { Blur = 22, Bezel = 14, Refraction = 10, Tint = PanelTint, TintAmount = 0.72, Saturation = 1.6, Highlight = 0.7 }); } }
     }
 
     internal static class ScreenCapture
     {
+        /// <summary>The whole primary screen.</summary>
         public static Pix Capture()
         {
-            try
-            {
-                var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-                using (var bmp = new System.Drawing.Bitmap(b.Width, b.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
-                {
-                    using (var g = System.Drawing.Graphics.FromImage(bmp))
-                        g.CopyFromScreen(b.Left, b.Top, 0, 0, b.Size, System.Drawing.CopyPixelOperation.SourceCopy);
-                    var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, b.Width, b.Height),
-                        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                    var px = new int[b.Width * b.Height];
-                    Marshal.Copy(data.Scan0, px, 0, px.Length);
-                    bmp.UnlockBits(data);
-                    return new Pix { X = b.Left, Y = b.Top, W = b.Width, H = b.Height, D = px };
-                }
-            }
-            catch (Exception ex) { Program.Log(ex); return null; }
+            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+            return CaptureRegion(b.Left, b.Top, b.Width, b.Height);
         }
 
+        /// <summary>A screen rectangle, or null if it is empty or can't be read (e.g. while the secure desktop is up).</summary>
         public static Pix CaptureRegion(int x, int y, int w, int h)
         {
+            if (w <= 0 || h <= 0) return null;
             try
             {
                 using (var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
@@ -81,8 +70,8 @@ namespace MacLook
                     var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, w, h),
                         System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                     var px = new int[w * h];
-                    Marshal.Copy(data.Scan0, px, 0, px.Length);
-                    bmp.UnlockBits(data);
+                    try { Marshal.Copy(data.Scan0, px, 0, px.Length); }
+                    finally { bmp.UnlockBits(data); }
                     return new Pix { X = x, Y = y, W = w, H = h, D = px };
                 }
             }
@@ -118,7 +107,7 @@ namespace MacLook
 
         public static BitmapSource Render(Pix snap, int x, int y, int w, int h, double radius, GlassStyle s)
         {
-            if (w <= 0 || h <= 0 || w > 8000 || h > 8000) return null;
+            if (snap == null || snap.W <= 0 || snap.H <= 0 || w <= 0 || h <= 0 || w > 8000 || h > 8000) return null;
             int br = Math.Max(1, s.Blur / 2);
             int m = s.Blur > 0 ? br * 3 + 2 : 1;
             int ew = w + 2 * m, eh = h + 2 * m;
@@ -183,8 +172,10 @@ namespace MacLook
                     double add = hi * (spec * rim * 0.9 + 0.12 * k * k * k);
                     cr += add; cg += add; cb += add;
 
+                    // Premultiplied: clamp each channel to 0..255 before scaling by coverage, so no channel can
+                    // exceed alpha on the anti-aliased edge (the highlight pushes colours past 255).
                     int a = (int)(cov * 255);
-                    outPx[j * w + i] = (a << 24) | (C8(cr * cov) << 16) | (C8(cg * cov) << 8) | C8(cb * cov);
+                    outPx[j * w + i] = (a << 24) | (C8(C8(cr) * cov) << 16) | (C8(C8(cg) * cov) << 8) | C8(C8(cb) * cov);
                 }
             }
             var bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Pbgra32, null, outPx, w * 4);
@@ -196,7 +187,10 @@ namespace MacLook
         public static BitmapSource Backdrop(Pix snap, int down, int blur, double darken)
         {
             if (snap == null) return null;
+            if (down < 1) down = 1;
+            if (blur < 0) blur = 0;
             int w = snap.W / down, h = snap.H / down;
+            if (w <= 0 || h <= 0) return null;
             var a = new int[w * h];
             for (int j = 0; j < h; j++)
                 for (int i = 0; i < w; i++)
@@ -236,11 +230,19 @@ namespace MacLook
             int x = Math.Max(b.Left, Math.Min(b.Right - w, p.X - w / 2)), y = Math.Max(b.Top, Math.Min(b.Bottom - h, p.Y - h / 2));
             var snap = ScreenCapture.CaptureRegion(x, y, w, h);
             if (snap == null) return;
-            menu.Opened += (s, e) => menu.Dispatcher.BeginInvoke(new Action(() =>
+            // One-shot: a menu that is opened again gets a fresh snapshot, instead of piling up handlers
+            // that each keep a multi-megabyte snapshot alive and repaint the glass with stale pixels.
+            RoutedEventHandler opened = null;
+            opened = (s, e) =>
             {
-                var bd = menu.Template == null ? null : menu.Template.FindName("GlassBd", menu) as Border;
-                if (bd != null) Apply(bd, snap, GlassStyles.Menu);
-            }), DispatcherPriority.Loaded);
+                menu.Opened -= opened;
+                menu.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    var bd = menu.Template == null ? null : menu.Template.FindName("GlassBd", menu) as Border;
+                    if (bd != null) Apply(bd, snap, GlassStyles.Menu);
+                }), DispatcherPriority.Loaded);
+            };
+            menu.Opened += opened;
         }
 
         private static double Sample(int[] a, int w, int h, double fx, double fy, int shift)

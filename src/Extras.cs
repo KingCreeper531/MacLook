@@ -50,8 +50,8 @@ namespace MacLook
             Loaded += (s, e) => { box.Focus(); box.SelectAll(); };
             PreviewKeyDown += (s, e) =>
             {
-                if (e.Key == Key.Enter) { ok = true; Close(); }
-                else if (e.Key == Key.Escape) Close();
+                if (e.Key == Key.Enter) { ok = true; Close(); e.Handled = true; }
+                else if (e.Key == Key.Escape) { Close(); e.Handled = true; }
             };
         }
 
@@ -102,16 +102,32 @@ namespace MacLook
             Content = card;
             Ui.Glassify(this, card);
             Loaded += (s, e) => { search.Focus(); Fill(); };
-            PreviewKeyDown += (s, e) => { if (e.Key == Key.Escape) Close(); };
+            PreviewKeyDown += (s, e) =>
+            {
+                if (e.Key == Key.Escape) { Close(); e.Handled = true; }
+                else if (e.Key == Key.Enter)
+                {
+                    // Enter adds the highlighted app, or the top of the list when nothing is highlighted.
+                    var pick = selected ?? firstMatch;
+                    if (pick != null) { chosen = pick; Close(); }
+                    e.Handled = true;
+                }
+            };
         }
+
+        private AppEntry firstMatch;
+        private const int MaxRows = 250;   // keep typing responsive with big app catalogs
 
         private void Fill()
         {
             list.Children.Clear();
+            // The old rows are gone, so a selection made in them must not be added by "Add" or Enter.
+            selected = null; selectedRow = null; firstMatch = null;
             string q = search.Text.Trim();
-            foreach (var a in AppCatalog.All.Where(x => AppCatalog.Score(AppCatalog.DisplayName(x), q) > 0).Take(250))
+            foreach (var a in AppCatalog.All.Where(x => AppCatalog.Score(AppCatalog.DisplayName(x), q) > 0).Take(MaxRows))
             {
                 var app = a;
+                if (firstMatch == null) firstMatch = app;
                 var img = new Image { Width = 24, Height = 24, Margin = new Thickness(0, 0, 10, 0) };
                 RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                 var dp = new DockPanel();
@@ -183,7 +199,14 @@ namespace MacLook
         };
 
         [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vk);
-        [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+        [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+
+        private const int VK_LBUTTON = 0x01;
+        private const uint WM_SYSCOMMAND = 0x0112;
+        private const int SC_SCREENSAVE = 0xF140;
+        private const int HotPx = 2;          // how close to the corner the pointer must be
+        private const int ReleasePx = 40;     // how far it must move away before the corner re-arms
+        private const int DwellMs = 140;      // how long it must rest in the corner
 
         private static DispatcherTimer timer;
         private static string armedCorner;
@@ -198,6 +221,7 @@ namespace MacLook
 
         public static void Start()
         {
+            if (timer != null) return;
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
             timer.Tick += (s, e) => Tick();
             timer.Start();
@@ -206,25 +230,31 @@ namespace MacLook
         private static void Tick()
         {
             if (Settings.HotTopLeft == "none" && Settings.HotTopRight == "none" && Settings.HotBottomLeft == "none" && Settings.HotBottomRight == "none") return;
-            if (Program.IsFullscreen || (GetAsyncKeyState(0x01) & 0x8000) != 0) { armedCorner = null; return; }
+            if (Program.IsFullscreen) { armedCorner = null; return; }
             Native.POINT p;
             if (!Native.GetCursorPos(out p)) return;
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            const int hot = 2, release = 40;
             string corner = null;
-            if (p.X <= b.Left + hot && p.Y <= b.Top + hot) corner = "tl";
-            else if (p.X >= b.Right - 1 - hot && p.Y <= b.Top + hot) corner = "tr";
-            else if (p.X <= b.Left + hot && p.Y >= b.Bottom - 1 - hot) corner = "bl";
-            else if (p.X >= b.Right - 1 - hot && p.Y >= b.Bottom - 1 - hot) corner = "br";
+            if (p.X <= b.Left + HotPx && p.Y <= b.Top + HotPx) corner = "tl";
+            else if (p.X >= b.Right - 1 - HotPx && p.Y <= b.Top + HotPx) corner = "tr";
+            else if (p.X <= b.Left + HotPx && p.Y >= b.Bottom - 1 - HotPx) corner = "bl";
+            else if (p.X >= b.Right - 1 - HotPx && p.Y >= b.Bottom - 1 - HotPx) corner = "br";
 
             if (corner == null)
             {
-                bool far = p.X > b.Left + release && p.X < b.Right - release || p.Y > b.Top + release && p.Y < b.Bottom - release;
+                bool far = p.X > b.Left + ReleasePx && p.X < b.Right - ReleasePx || p.Y > b.Top + ReleasePx && p.Y < b.Bottom - ReleasePx;
                 if (far) { armedCorner = null; fired = false; }
                 return;
             }
+            // Never fire while a button is held (dragging into the corner). Keep the state of a corner that
+            // already fired, though: clicking there afterwards (e.g. the Apple menu) must not fire it again.
+            if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0)
+            {
+                if (corner != armedCorner) { armedCorner = corner; enteredAt = DateTime.Now; fired = false; }
+                return;
+            }
             if (corner != armedCorner) { armedCorner = corner; enteredAt = DateTime.Now; fired = false; return; }
-            if (fired || (DateTime.Now - enteredAt).TotalMilliseconds < 140) return;
+            if (fired || (DateTime.Now - enteredAt).TotalMilliseconds < DwellMs) return;
             fired = true;
             string action = corner == "tl" ? Settings.HotTopLeft : corner == "tr" ? Settings.HotTopRight : corner == "bl" ? Settings.HotBottomLeft : Settings.HotBottomRight;
             Run(action);
@@ -240,7 +270,12 @@ namespace MacLook
                 case "notifications": Program.NotificationCenter.Toggle(); break;
                 case "control": Program.ControlCenter.Toggle(); break;
                 case "spotlight": Program.Spotlight.Toggle(); break;
-                case "screensaver": SendMessage(Native.GetForegroundWindow(), 0x0112, new IntPtr(0xF140), IntPtr.Zero); break;
+                case "screensaver":
+                    // Posted, not sent: SendMessage would freeze Mac Look if the foreground app is hung.
+                    var target = Native.GetForegroundWindow();
+                    if (target == IntPtr.Zero) target = new WindowInteropHelper(Program.MenuBar).Handle;
+                    PostMessage(target, WM_SYSCOMMAND, new IntPtr(SC_SCREENSAVE), IntPtr.Zero);
+                    break;
                 case "lock": Power.Lock(); break;
             }
         }
@@ -276,15 +311,19 @@ namespace MacLook
             var shot = ScreenCapture.Capture();
             if (shot == null) return;
             var now = DateTime.Now;
-            string name = "Screenshot " + now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " at " + now.ToString("h.mm.ss tt", CultureInfo.InvariantCulture) + ".png";
-            string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), name);
+            string name = "Screenshot " + now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " at " + now.ToString("h.mm.ss tt", CultureInfo.InvariantCulture);
+            string dir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             var bmp = BitmapSource.Create(shot.W, shot.H, 96, 96, PixelFormats.Bgr32, null, shot.D, shot.W * 4);
             bmp.Freeze();
+            string path;
             try
             {
+                // Two shots in the same second must not overwrite each other ("… (2).png").
+                path = Path.Combine(dir, name + ".png");
+                for (int n = 2; File.Exists(path); n++) path = Path.Combine(dir, name + " (" + n + ").png");
                 var enc = new PngBitmapEncoder();
                 enc.Frames.Add(BitmapFrame.Create(bmp));
-                using (var fs = File.Create(path)) enc.Save(fs);
+                using (var fs = new FileStream(path, FileMode.CreateNew)) enc.Save(fs);
             }
             catch (Exception ex) { Program.Log(ex); return; }
             Flash();
@@ -324,23 +363,28 @@ namespace MacLook
                     Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 6, Direction = 270, Opacity = 0.4 }
                 };
                 Content = card;
-                card.MouseLeftButtonUp += (s, e) => { Launcher.Open(path); Close(); };
-                card.MouseRightButtonUp += (s, e) => { Launcher.Open("explorer.exe", "/select,\"" + path + "\""); Close(); };
+                Closed += (s, e) => closed = true;
+                card.MouseLeftButtonUp += (s, e) => { Launcher.Open(path); SafeClose(); };
+                card.MouseRightButtonUp += (s, e) => { Launcher.Open("explorer.exe", "/select,\"" + path + "\""); SafeClose(); };
                 Loaded += (s, e) =>
                 {
-                    var wa = SystemParameters.WorkArea;
                     Left = SystemParameters.PrimaryScreenWidth - ActualWidth - 8;
                     Top = SystemParameters.PrimaryScreenHeight - ActualHeight - 90;
                     slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(320, 0, TimeSpan.FromMilliseconds(380)) { EasingFunction = new BackEase { Amplitude = 0.3, EasingMode = EasingMode.EaseOut } });
-                    Launcher.Later(5000, () =>
+                    Launcher.Later(PreviewMs, () =>
                     {
-                        if (!IsVisible) return;
+                        if (closed || !IsVisible) return;
                         var a = new DoubleAnimation(0, 340, TimeSpan.FromMilliseconds(300)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
-                        a.Completed += (o, ev) => Close();
+                        a.Completed += (o, ev) => SafeClose();   // the user may have clicked it away meanwhile
                         slide.BeginAnimation(TranslateTransform.XProperty, a);
                     });
                 };
             }
+
+            private const int PreviewMs = 5000;   // how long the thumbnail stays before sliding away
+            private bool closed;
+
+            private void SafeClose() { if (!closed) Close(); }
         }
     }
 
@@ -415,13 +459,18 @@ namespace MacLook
             HidePanel();
             if (MessageBox.Show("Do you want to force “" + name + "” to quit?\n\nYou will lose any unsaved changes.", "Force Quit",
                     MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+            int self = Process.GetCurrentProcess().Id;
             foreach (var pid in group.Select(w => w.Pid).Distinct())
             {
+                if ((int)pid == self || pid == 0) continue;
                 try
                 {
-                    var p = Process.GetProcessById((int)pid);
-                    if (p.ProcessName.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) || p.ProcessName.Equals("explorer", StringComparison.OrdinalIgnoreCase)) continue;
-                    p.Kill();
+                    // The app may have exited since the list was built; GetProcessById / Kill then throw and we just log.
+                    using (var p = Process.GetProcessById((int)pid))
+                    {
+                        if (p.ProcessName.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase) || p.ProcessName.Equals("explorer", StringComparison.OrdinalIgnoreCase)) continue;
+                        p.Kill();
+                    }
                 }
                 catch (Exception ex) { Program.Log(ex); }
             }
@@ -464,16 +513,24 @@ namespace MacLook
             {
                 using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
                 {
-                    product = Convert.ToString(k.GetValue("ProductName"));
-                    version = Convert.ToString(k.GetValue("DisplayVersion"));
-                    build = Convert.ToString(k.GetValue("CurrentBuild"));
-                    int b;
-                    if (int.TryParse(build, out b) && b >= 22000) product = product.Replace("Windows 10", "Windows 11");
+                    if (k != null)
+                    {
+                        string name = Convert.ToString(k.GetValue("ProductName"));
+                        if (!string.IsNullOrEmpty(name)) product = name;
+                        version = Convert.ToString(k.GetValue("DisplayVersion"));
+                        if (string.IsNullOrEmpty(version)) version = Convert.ToString(k.GetValue("ReleaseId"));   // before 20H2
+                        build = Convert.ToString(k.GetValue("CurrentBuild"));
+                        int b;
+                        if (int.TryParse(build, out b) && b >= 22000) product = product.Replace("Windows 10", "Windows 11");
+                    }
                 }
             }
-            catch { }
+            catch (Exception ex) { Program.Log(ex); }
             info.Children.Add(Label(product, 26, true));
-            info.Children.Add(Label("Version " + version + " (Build " + build + ")", 12.5, false, 0.6));
+            var ver = new List<string>();
+            if (!string.IsNullOrEmpty(version)) ver.Add("Version " + version);
+            if (!string.IsNullOrEmpty(build)) ver.Add("(Build " + build + ")");
+            info.Children.Add(Label(string.Join(" ", ver), 12.5, false, 0.6));
             info.Children.Add(new Border { Height = 14 });
 
             AddRow("Name", Environment.MachineName);
@@ -519,7 +576,7 @@ namespace MacLook
             try
             {
                 using (var k = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0"))
-                    return Convert.ToString(k.GetValue("ProcessorNameString")).Trim();
+                    return k == null ? null : Convert.ToString(k.GetValue("ProcessorNameString")).Trim();
             }
             catch { return null; }
         }
@@ -530,6 +587,7 @@ namespace MacLook
             {
                 using (var cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"))
                 {
+                    if (cls == null) return null;
                     var names = new List<string>();
                     foreach (var sub in cls.GetSubKeyNames())
                     {
@@ -538,6 +596,7 @@ namespace MacLook
                         {
                             using (var k = cls.OpenSubKey(sub))
                             {
+                                if (k == null) continue;
                                 string d = Convert.ToString(k.GetValue("DriverDesc"));
                                 if (string.IsNullOrEmpty(d) || d.Contains("Basic") || d.Contains("Remote") || d.Contains("Virtual") || names.Contains(d)) continue;
                                 names.Add(d);

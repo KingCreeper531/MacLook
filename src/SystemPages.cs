@@ -10,7 +10,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using Microsoft.Win32;
 
 namespace MacLook
 {
@@ -157,14 +156,17 @@ namespace MacLook
                 string s = "Wi-Fi isn't available on this PC";
                 try
                 {
-                    var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("netsh", "wlan show interfaces") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true });
-                    string o = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(4000);
+                    string o;
+                    using (var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("netsh", "wlan show interfaces") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true }))
+                    {
+                        o = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(4000);
+                    }
                     var m = Regex.Match(o, @"^\s*SSID\s*:\s*(.+)$", RegexOptions.Multiline);
                     if (m.Success && Regex.IsMatch(o, @"State\s*:\s*connected", RegexOptions.IgnoreCase)) s = "Connected to " + m.Groups[1].Value.Trim();
                     else if (o.IndexOf("Name", StringComparison.OrdinalIgnoreCase) >= 0) s = "Not connected";
                 }
-                catch { }
+                catch (Exception ex) { Program.Log(ex); }
                 Dispatcher.BeginInvoke(new Action(() => status.Text = s));
             });
             t.IsBackground = true;
@@ -198,8 +200,8 @@ namespace MacLook
         private void SoundPage()
         {
             page.Children.Add(Group(
-                Row("Output volume", null, Slider(0, 100, Math.Round(Audio.GetVolume() * 100), "0", v => Audio.SetVolume((float)(v / 100)))),
-                Row("Mute", null, Toggle(Audio.GetMute(), v => Audio.SetMute(v)))));
+                Row("Output volume", null, Slider(0, 100, Math.Round(Audio.GetVolume() * 100), "0", v => Audio.SetVolume((float)(v / 100)), false)),
+                Row("Mute", null, Toggle(Audio.GetMute(), v => Audio.SetMute(v), false))));
             page.Children.Add(Group(
                 Row("Output device", "Speakers, headphones and more.", Button("Choose…", () => Native.PressKeys(Native.VK_WIN, Native.VK_CTRL, (byte)'V'))),
                 Row("Volume for each app", null, Link("Volume Mixer…", "ms-settings:apps-volume")),
@@ -232,14 +234,26 @@ namespace MacLook
                 {
                     var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Choose wallpaper", Filter = "Pictures|*.jpg;*.jpeg;*.png;*.bmp|All files|*.*", InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures) };
                     if (dlg.ShowDialog(this) != true) return;
-                    Wallpaper.SetImage(dlg.FileName);
-                    Program.RecaptureDesktop();
-                    Launcher.Later(600, BuildPage);
+                    ChangeWallpaper(() => Wallpaper.SetImage(dlg.FileName));
                 })),
-                Row("Mac-style wallpaper", "Original rolling hills at dusk, drawn by Mac Look.", Button("Use", () => { try { Wallpaper.SetMacStyle(); Program.RecaptureDesktop(); Launcher.Later(600, BuildPage); } catch (Exception ex) { Program.Log(ex); } })),
-                Row("Restore your original wallpaper", null, Button("Restore", () => { Wallpaper.Restore(); Program.RecaptureDesktop(); Launcher.Later(600, BuildPage); })),
+                Row("Mac-style wallpaper", "Original rolling hills at dusk, drawn by Mac Look.", Button("Use", () => ChangeWallpaper(Wallpaper.SetMacStyle))),
+                Row("Restore your original wallpaper", null, Button("Restore", () => ChangeWallpaper(Wallpaper.Restore))),
                 Row("Slideshow, colors and more", null, Link("Open…", "ms-settings:personalization-background"))));
         }
+
+        /// <summary>Apply a wallpaper change, re-photograph the desktop and refresh the preview once Windows has caught up.</summary>
+        private void ChangeWallpaper(Action change)
+        {
+            try
+            {
+                change();
+                Program.RecaptureDesktop();
+                Launcher.Later(WallpaperSettleMs, BuildPage);
+            }
+            catch (Exception ex) { Program.Log(ex); }
+        }
+
+        private const int WallpaperSettleMs = 600;
 
         private static BitmapSource CurrentWallpaper()
         {
@@ -269,7 +283,11 @@ namespace MacLook
         private void PowerPage()
         {
             var ps = System.Windows.Forms.SystemInformation.PowerStatus;
-            if (ps.BatteryChargeStatus != System.Windows.Forms.BatteryChargeStatus.NoSystemBattery)
+            // BatteryChargeStatus is a flags value (Unknown = 255 also has the NoSystemBattery bit), and an
+            // unknown charge is reported as 255 %.
+            bool hasBattery = (ps.BatteryChargeStatus & System.Windows.Forms.BatteryChargeStatus.NoSystemBattery) == 0
+                && ps.BatteryLifePercent >= 0 && ps.BatteryLifePercent <= 1;
+            if (hasBattery)
             {
                 string state = ps.PowerLineStatus == System.Windows.Forms.PowerLineStatus.Online ? "Charging" : "On battery";
                 page.Children.Add(Group(Row("Battery", Math.Round(ps.BatteryLifePercent * 100) + "%  ·  " + state, UsageBar(ps.BatteryLifePercent))));
@@ -284,11 +302,14 @@ namespace MacLook
         private void StoragePage()
         {
             var rows = new System.Collections.Generic.List<UIElement>();
-            foreach (var d in DriveInfo.GetDrives())
+            DriveInfo[] drives;
+            try { drives = DriveInfo.GetDrives(); }
+            catch (Exception ex) { Program.Log(ex); drives = new DriveInfo[0]; }
+            foreach (var d in drives)
             {
                 try
                 {
-                    if (!d.IsReady || d.DriveType != DriveType.Fixed) continue;
+                    if (!d.IsReady || d.DriveType != DriveType.Fixed || d.TotalSize <= 0) continue;
                     double used = 1 - d.AvailableFreeSpace / (double)d.TotalSize;
                     string label = string.IsNullOrEmpty(d.VolumeLabel) ? "Local Disk" : d.VolumeLabel;
                     rows.Add(Row(label + " (" + d.Name.TrimEnd('\\') + ")", Math.Round(d.AvailableFreeSpace / 1e9) + " GB available of " + Math.Round(d.TotalSize / 1e9) + " GB", UsageBar(used)));

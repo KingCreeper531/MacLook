@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 namespace MacLook
@@ -24,12 +25,21 @@ namespace MacLook
         {
             Type t = Type.GetTypeFromProgID("WScript.Shell");
             dynamic shell = Activator.CreateInstance(t);
-            dynamic sc = shell.CreateShortcut(link);
-            sc.TargetPath = target;
-            sc.WorkingDirectory = Path.GetDirectoryName(target);
-            sc.IconLocation = target + ",0";
-            sc.Description = "Mac Look";
-            sc.Save();
+            dynamic sc = null;
+            try
+            {
+                sc = shell.CreateShortcut(link);
+                sc.TargetPath = target;
+                sc.WorkingDirectory = Path.GetDirectoryName(target);
+                sc.IconLocation = target + ",0";
+                sc.Description = "Mac Look";
+                sc.Save();
+            }
+            finally
+            {
+                if (sc != null) Marshal.FinalReleaseComObject(sc);
+                Marshal.FinalReleaseComObject(shell);
+            }
         }
 
         public static void Register(string version, long sizeKb)
@@ -61,11 +71,15 @@ namespace MacLook
         /// <summary>Stops every running Mac Look except this process.</summary>
         public static void StopRunning()
         {
-            int self = Process.GetCurrentProcess().Id;
+            int self;
+            using (var me = Process.GetCurrentProcess()) self = me.Id;
             foreach (var p in Process.GetProcessesByName("MacLook"))
             {
-                if (p.Id == self) continue;
-                try { p.Kill(); p.WaitForExit(5000); } catch { }
+                using (p)
+                {
+                    if (p.Id == self) continue;
+                    try { p.Kill(); p.WaitForExit(5000); } catch { }   // already gone, or not ours to stop
+                }
             }
         }
 
@@ -79,7 +93,9 @@ namespace MacLook
 
             string cmd = "ping -n 3 127.0.0.1 >nul & rmdir /s /q \"" + Dir + "\"";
             if (removeSettings && !string.IsNullOrEmpty(settingsDir)) cmd += " & rmdir /s /q \"" + settingsDir + "\"";
-            Process.Start(new ProcessStartInfo("cmd.exe", "/c " + cmd) { CreateNoWindow = true, UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+            // Run from %TEMP%: cmd inherits our current directory otherwise, and when that is the install folder
+            // (the shortcuts start Mac Look there) Windows refuses to remove a folder that is some process's current directory.
+            Process.Start(new ProcessStartInfo("cmd.exe", "/c " + cmd) { CreateNoWindow = true, UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = Path.GetTempPath() });
         }
     }
 }

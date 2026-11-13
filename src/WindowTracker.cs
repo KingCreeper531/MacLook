@@ -64,6 +64,10 @@ namespace MacLook
         [DllImport("shell32.dll")] private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore ps);
         [DllImport("ole32.dll")] private static extern int PropVariantClear(ref PROPVARIANT pv);
 
+        private const ushort VT_LPWSTR = 31;
+        private static readonly Guid PKEY_AppUserModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+        private const uint PID_AppUserModel_ID = 5;
+
         private static readonly uint selfPid = (uint)Process.GetCurrentProcess().Id;
         private static readonly Dictionary<IntPtr, string> aumidCache = new Dictionary<IntPtr, string>();
         private static readonly Dictionary<string, string> nameCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -91,8 +95,13 @@ namespace MacLook
             var alive = new HashSet<IntPtr>();
             Native.EnumWindows((h, l) =>
             {
-                var w = InspectStrict(h);
-                if (w != null) { result.Add(w); alive.Add(h); }
+                // Never let an exception unwind through the native EnumWindows frame.
+                try
+                {
+                    var w = InspectStrict(h);
+                    if (w != null) { result.Add(w); alive.Add(h); }
+                }
+                catch (Exception ex) { Program.Log(ex); }
                 return true;
             }, IntPtr.Zero);
 
@@ -188,16 +197,16 @@ namespace MacLook
                 Guid iid = typeof(IPropertyStore).GUID;
                 if (SHGetPropertyStoreForWindow(h, ref iid, out ps) == 0 && ps != null)
                 {
-                    var key = new PROPERTYKEY { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+                    var key = new PROPERTYKEY { fmtid = PKEY_AppUserModel, pid = PID_AppUserModel_ID };
                     PROPVARIANT pv;
                     if (ps.GetValue(ref key, out pv) == 0)
                     {
-                        if (pv.vt == 31 && pv.p != IntPtr.Zero) result = Marshal.PtrToStringUni(pv.p);
+                        if (pv.vt == VT_LPWSTR && pv.p != IntPtr.Zero) result = Marshal.PtrToStringUni(pv.p);
                         PropVariantClear(ref pv);
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Program.Log(ex); }
             finally { if (ps != null) Marshal.ReleaseComObject(ps); }
             if (string.IsNullOrWhiteSpace(result)) result = null;
             aumidCache[h] = result;

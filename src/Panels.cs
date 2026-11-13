@@ -9,7 +9,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
-using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace MacLook
@@ -65,7 +64,7 @@ namespace MacLook
         public void Toggle()
         {
             if (IsVisible && !closing) { HidePanel(); return; }
-            if ((DateTime.Now - lastHidden).TotalMilliseconds < 350) return;   // the click that closed us
+            if ((DateTime.Now - lastHidden).TotalMilliseconds < ReopenDebounceMs) return;   // the click that closed us
             Open();
         }
 
@@ -73,11 +72,27 @@ namespace MacLook
         protected virtual void Place() { }
         protected virtual void OnShown() { }
 
+        /// <summary>Speaker icon for the current master volume / mute state.</summary>
+        protected static string VolumeGlyph()
+        {
+            float v = Audio.GetVolume();
+            return Audio.GetMute() || v < 0.01f ? "" : v < 0.34f ? "" : v < 0.67f ? "" : "";
+        }
+
+        /// <summary>Hang from the menu bar at the right edge of the main screen.</summary>
+        protected void PlaceTopRight()
+        {
+            Left = SystemParameters.PrimaryScreenWidth - ActualWidth + 6;
+            Top = MenuBarWindow.BarHeight - 2;
+        }
+
         public void Open()
         {
             closing = false;
             OnOpening();
             if (IsVisible) Hide();
+            // Hiding an active window raises Deactivated, which may have started a close; cancel it.
+            closing = false;
             BeginAnimation(OpacityProperty, null);
             Opacity = 0;
             Show();
@@ -93,13 +108,18 @@ namespace MacLook
             double s = src == null ? 1 : src.CompositionTarget.TransformToDevice.M11;
             int x = (int)(Left * s), y = (int)(Top * s), w = (int)(ActualWidth * s), h = (int)(ActualHeight * s);
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            int capH = Math.Min(b.Bottom - Math.Max(b.Top, y), h + (int)(700 * s));   // room to grow (e.g. Spotlight results)
-            Snapshot = ScreenCapture.CaptureRegion(Math.Max(b.Left, x), Math.Max(b.Top, y), Math.Max(1, Math.Min(w, b.Right - x)), Math.Max(1, capH)) ?? ScreenCapture.Capture();
+            int capX = Math.Max(b.Left, x), capY = Math.Max(b.Top, y);
+            int capW = Math.Min(x + w, b.Right) - capX;
+            int capH = Math.Min(b.Bottom - capY, h + (int)(GrowRoom * s));   // room to grow (e.g. Spotlight results)
+            Snapshot = ScreenCapture.CaptureRegion(capX, capY, Math.Max(1, capW), Math.Max(1, capH)) ?? ScreenCapture.Capture();
             foreach (var p in parts) GlassFx.Apply(p.Key, Snapshot, p.Value);
             Entrance();
         }
 
         private bool closing;
+        private const int FadeMs = 110;               // open / close fade length
+        private const int ReopenDebounceMs = 350;     // ignore a Toggle this soon after hiding
+        private const double GrowRoom = 700;          // extra height (DIPs) photographed below the panel
 
         /// <summary>Shrink slightly toward the top and fade out, then hide.</summary>
         public void HidePanel()
@@ -107,7 +127,7 @@ namespace MacLook
             if (!IsVisible || closing) return;
             lastHidden = DateTime.Now;
             closing = true;
-            var dur = TimeSpan.FromMilliseconds(110);
+            var dur = TimeSpan.FromMilliseconds(FadeMs);
             var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
             var fe = Content as FrameworkElement;
             if (fe != null)
@@ -129,11 +149,10 @@ namespace MacLook
             BeginAnimation(OpacityProperty, fade);
         }
 
-        /// <summary>Blur-in + springy scale, in the spirit of React Bits' BlurText / spring entrances.</summary>
+        /// <summary>A short fade with a small springy drop (no blur effect, which is slow to render).</summary>
         private void Entrance()
         {
-            // Quick and light: a short fade with a small springy drop (no blur effect, which is slow to render).
-            BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(110)));
+            BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(FadeMs)));
             var fe = Content as FrameworkElement;
             if (fe == null) return;
             var st = new ScaleTransform(0.96, 0.96);
@@ -333,7 +352,8 @@ namespace MacLook
             sound.Children.Add(Label("Sound", 13, true));
             volume = new ElasticSlider("") { Margin = new Thickness(0, 8, 0, 0) };
             volume.ValueChanged += v => { Audio.SetVolume((float)v); UpdateVolumeGlyph(); };
-            volume.Icon.MouseLeftButtonUp += (s, e) => { Audio.SetMute(!Audio.GetMute()); UpdateVolumeGlyph(); e.Handled = true; };
+            // Preview + Handled: the slider captures the mouse on press, so the icon would never see its own button-up.
+            volume.Icon.PreviewMouseLeftButtonDown += (s, e) => { Audio.SetMute(!Audio.GetMute()); UpdateVolumeGlyph(); e.Handled = true; };
             sound.Children.Add(volume);
             var soundModule = Module(sound);
             soundModule.Margin = new Thickness(0, 10, 0, 0);
@@ -414,8 +434,7 @@ namespace MacLook
 
         private void UpdateVolumeGlyph()
         {
-            float v = Audio.GetVolume();
-            volume.Icon.Text = Audio.GetMute() || v < 0.01f ? "" : v < 0.34f ? "" : v < 0.67f ? "" : "";
+            volume.Icon.Text = VolumeGlyph();
         }
 
         protected override void OnOpening()
@@ -441,11 +460,7 @@ namespace MacLook
             return "Not connected";
         }
 
-        protected override void Place()
-        {
-            Left = SystemParameters.PrimaryScreenWidth - ActualWidth + 6;
-            Top = MenuBarWindow.BarHeight - 2;
-        }
+        protected override void Place() { PlaceTopRight(); }
     }
 
     internal class NotificationCenterWindow : GlassPanel
@@ -538,11 +553,7 @@ namespace MacLook
             return st;
         }
 
-        protected override void Place()
-        {
-            Left = SystemParameters.PrimaryScreenWidth - ActualWidth + 6;
-            Top = MenuBarWindow.BarHeight - 2;
-        }
+        protected override void Place() { PlaceTopRight(); }
     }
 
     internal static class ThemeSwitch

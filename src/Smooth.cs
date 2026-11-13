@@ -16,6 +16,8 @@ namespace MacLook
         [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr h, IntPtr dc);
         [DllImport("gdi32.dll")] private static extern int GetDeviceCaps(IntPtr dc, int index);
 
+        private const int VREFRESH = 116;
+
         public static int RefreshRate { get; private set; }
         private static int users;
         private static readonly TranslateTransform pump = new TranslateTransform();
@@ -25,8 +27,11 @@ namespace MacLook
         {
             int hz = 60;
             IntPtr dc = GetDC(IntPtr.Zero);
-            try { hz = GetDeviceCaps(dc, 116); } catch { }   // VREFRESH
-            finally { ReleaseDC(IntPtr.Zero, dc); }
+            if (dc != IntPtr.Zero)
+            {
+                hz = GetDeviceCaps(dc, VREFRESH);
+                ReleaseDC(IntPtr.Zero, dc);
+            }
             if (hz < 50 || hz > 500) hz = 60;
             RefreshRate = hz;
             Timeline.DesiredFrameRateProperty.OverrideMetadata(typeof(Timeline), new FrameworkPropertyMetadata { DefaultValue = (int?)hz });

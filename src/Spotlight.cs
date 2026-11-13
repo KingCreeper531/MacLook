@@ -101,8 +101,15 @@ namespace MacLook
             else if (e.Key == Key.Enter)
             {
                 e.Handled = true;
-                if (selected >= 0 && selected < current.Count) { var r = current[selected]; HidePanel(); r.Run(); }
+                if (selected >= 0 && selected < current.Count) RunResult(current[selected]);
             }
+        }
+
+        private void RunResult(Result r)
+        {
+            HidePanel();
+            try { r.Run(); }
+            catch (Exception ex) { Program.Log(ex); }
         }
 
         private void Search()
@@ -113,7 +120,7 @@ namespace MacLook
             {
                 string calc = TryCalc(q);
                 if (calc != null)
-                    current.Add(new Result { Title = calc, Subtitle = "Calculator — press Enter to copy", IconGlyph = "", Run = () => Clipboard.SetText(calc) });
+                    current.Add(new Result { Title = calc, Subtitle = "Calculator — press Enter to copy", IconGlyph = "", Run = () => CopyText(calc) });
 
                 var ranked = AppCatalog.All
                     .Where(a => !LaunchpadPrefs.Hidden.Contains(a.Id))
@@ -141,12 +148,23 @@ namespace MacLook
             Select(0);
         }
 
+        /// <summary>The clipboard can be briefly locked by another app; don't let that throw.</summary>
+        private static void CopyText(string text)
+        {
+            try { Clipboard.SetText(text); }
+            catch (Exception ex) { Program.Log(ex); }
+        }
+
+        private const int MaxCalcLength = 200;   // deep nesting can overflow DataTable's recursive parser
+
         private static string TryCalc(string q)
         {
+            if (q.Length > MaxCalcLength) return null;
             if (!Regex.IsMatch(q, @"^[\d\s\.\+\-\*/\(\)%]+$") || !Regex.IsMatch(q, @"\d\s*[\+\-\*/%]")) return null;
             try
             {
-                string expr = Regex.Replace(q, @"\d+(\.\d+)?", m => m.Value.Contains(".") ? m.Value : m.Value + ".0");
+                // Write every whole number as a decimal ("7" -> "7.0") so DataTable does floating-point math; ".5" is left alone.
+                string expr = Regex.Replace(q, @"\d*\.\d+|\d+", m => m.Value.Contains(".") ? m.Value : m.Value + ".0");
                 object v = new System.Data.DataTable().Compute(expr, null);
                 double d = Convert.ToDouble(v, CultureInfo.InvariantCulture);
                 if (double.IsNaN(d) || double.IsInfinity(d)) return null;
@@ -190,7 +208,7 @@ namespace MacLook
                 g.Children.Add(text);
                 rowBorder.Child = g;
                 rowBorder.MouseEnter += (s, e) => Select(index);
-                rowBorder.MouseLeftButtonUp += (s, e) => { HidePanel(); current[index].Run(); };
+                rowBorder.MouseLeftButtonUp += (s, e) => RunResult(r);
                 results.Children.Add(rowBorder);
             }
         }

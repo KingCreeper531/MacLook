@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Media;
-using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 
 namespace MacLook
@@ -32,7 +31,9 @@ namespace MacLook
                         foreach (var line in File.ReadAllLines(MapFile))
                         {
                             int i = line.LastIndexOf('|');
-                            if (i > 0) custom[line.Substring(0, i).Trim()] = line.Substring(i + 1).Trim();
+                            if (i <= 0) continue;
+                            string key = line.Substring(0, i).Trim(), file = line.Substring(i + 1).Trim();
+                            if (key.Length > 0 && file.Length > 0) custom[key] = file;
                         }
                 }
                 catch (Exception ex) { Program.Log(ex); }
@@ -47,21 +48,46 @@ namespace MacLook
             Directory.CreateDirectory(IconDir);
             string dest = Path.Combine(IconDir, Guid.NewGuid().ToString("N") + Path.GetExtension(imagePath));
             File.Copy(imagePath, dest, true);
+            string old;
+            Custom.TryGetValue(key, out old);
             Custom[key] = dest;
             SaveMap();
             cache.Clear();
+            DeleteCopy(old);
         }
 
         public static void ResetCustom(string key)
         {
-            if (Custom.Remove(key)) { SaveMap(); cache.Clear(); }
+            string old;
+            if (!Custom.TryGetValue(key, out old)) return;
+            Custom.Remove(key);
+            SaveMap();
+            cache.Clear();
+            DeleteCopy(old);
         }
 
         public static void ResetAll()
         {
+            var old = Custom.Values.ToList();
             Custom.Clear();
             SaveMap();
             cache.Clear();
+            foreach (var f in old) DeleteCopy(f);
+        }
+
+        /// <summary>
+        /// Deletes our private copy of a replaced icon image (only ever files inside our icons folder, and
+        /// only when no other app still uses it). Images are loaded fully into memory, so nothing holds them open.
+        /// </summary>
+        private static void DeleteCopy(string file)
+        {
+            if (string.IsNullOrEmpty(file) || Custom.Values.Any(v => string.Equals(v, file, StringComparison.OrdinalIgnoreCase))) return;
+            try
+            {
+                string full = Path.GetFullPath(file), dir = Path.GetFullPath(IconDir).TrimEnd('\\') + "\\";
+                if (full.StartsWith(dir, StringComparison.OrdinalIgnoreCase) && File.Exists(full)) File.Delete(full);
+            }
+            catch (Exception ex) { Program.Log(ex); }
         }
 
         public static void ClearCache() { cache.Clear(); }
@@ -82,8 +108,13 @@ namespace MacLook
 
         private static void SaveMap()
         {
-            Directory.CreateDirectory(Config.Dir);
-            File.WriteAllLines(MapFile, Custom.Select(kv => kv.Key + "|" + kv.Value).ToArray());
+            // Callers are menu clicks with no error handling of their own: log rather than throw.
+            try
+            {
+                Directory.CreateDirectory(Config.Dir);
+                File.WriteAllLines(MapFile, Custom.Select(kv => kv.Key + "|" + kv.Value).ToArray());
+            }
+            catch (Exception ex) { Program.Log(ex); }
         }
 
         /// <summary>The icon to show for a shell target, styled per Settings.</summary>
@@ -99,8 +130,10 @@ namespace MacLook
                 result = LoadImage(path);
             if (result == null)
             {
-                var raw = key.StartsWith("maclook:", StringComparison.OrdinalIgnoreCase) ? BuiltinIcons.Get(key) : IconLoader.Get(key, rawSize);
-                result = raw == null ? null : (Settings.IconStyle == "glass" && !key.StartsWith("maclook:", StringComparison.OrdinalIgnoreCase) ? Plate(raw) : raw);
+                // Mac Look's own built-in icons are already drawn in style: never put them on a plate.
+                bool builtin = key.StartsWith("maclook:", StringComparison.OrdinalIgnoreCase);
+                var raw = builtin ? BuiltinIcons.Get(key) : IconLoader.Get(key, rawSize);
+                result = raw == null ? null : (Settings.IconStyle == "glass" && !builtin ? Plate(raw) : raw);
             }
             cache[ck] = result;
             return result;
@@ -113,8 +146,8 @@ namespace MacLook
                 var bi = new BitmapImage();
                 bi.BeginInit();
                 bi.UriSource = new Uri(path);
-                bi.DecodePixelWidth = 256;
-                bi.CacheOption = BitmapCacheOption.OnLoad;
+                bi.DecodePixelWidth = S;
+                bi.CacheOption = BitmapCacheOption.OnLoad;   // read it all now, so the file isn't kept open
                 bi.EndInit();
                 bi.Freeze();
                 return bi;
@@ -233,27 +266,7 @@ namespace MacLook
             return Color.FromRgb((byte)(a.R + (b.R - a.R) * t), (byte)(a.G + (b.G - a.G) * t), (byte)(a.B + (b.B - a.B) * t));
         }
 
-        /// <summary>Superellipse (n=5) — the continuous-curvature "squircle" shape.</summary>
-        public static Geometry Squircle(double x, double y, double size)
-        {
-            const int N = 160;
-            const double n = 5;
-            double r = size / 2, cx = x + r, cy = y + r;
-            var g = new StreamGeometry();
-            using (var ctx = g.Open())
-            {
-                for (int i = 0; i < N; i++)
-                {
-                    double t = 2 * Math.PI * i / N;
-                    double c = Math.Cos(t), s = Math.Sin(t);
-                    double px = cx + r * Math.Sign(c) * Math.Pow(Math.Abs(c), 2 / n);
-                    double py = cy + r * Math.Sign(s) * Math.Pow(Math.Abs(s), 2 / n);
-                    if (i == 0) ctx.BeginFigure(new Point(px, py), true, true);
-                    else ctx.LineTo(new Point(px, py), true, true);
-                }
-            }
-            g.Freeze();
-            return g;
-        }
+        /// <summary>Superellipse (n=5) — the continuous-curvature "squircle" shape (same one as Mac Look's own icon).</summary>
+        public static Geometry Squircle(double x, double y, double size) { return AppIcon.Squircle(x, y, size); }
     }
 }

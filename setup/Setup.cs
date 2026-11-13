@@ -18,8 +18,8 @@ using Path = System.IO.Path;
 [assembly: AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: AssemblyProduct("Mac Look")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: AssemblyVersion("2.4.3.0")]
-[assembly: AssemblyFileVersion("2.4.3.0")]
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 
 namespace MacLookSetup
 {
@@ -55,7 +55,12 @@ namespace MacLookSetup
             get
             {
                 try { var v = FileVersionInfo.GetVersionInfo(SourceExe); return v.FileMajorPart + "." + v.FileMinorPart + "." + v.FileBuildPart; }
-                catch { return "2.4.3"; }
+                catch
+                {
+                    // MacLook.exe missing / unreadable: setup is always built together with it, so use our own version.
+                    var v = Assembly.GetExecutingAssembly().GetName().Version;
+                    return v.Major + "." + v.Minor + "." + v.Build;
+                }
             }
         }
 
@@ -186,29 +191,30 @@ namespace MacLookSetup
                 if (!File.Exists(SourceExe))
                     throw new Exception("MacLook.exe wasn't found next to this installer. Extract the whole zip first, then run MacLookSetup.exe again.");
                 if (!string.Equals(Path.GetFullPath(SourceExe), Path.GetFullPath(InstallInfo.Exe), StringComparison.OrdinalIgnoreCase))
-                    File.Copy(SourceExe, InstallInfo.Exe, true);
+                    CopyWithRetry(SourceExe, InstallInfo.Exe);
                 if (wasRunning)
                 {
                     // We stopped a running copy; put the Windows taskbar back before relaunching.
-                    var p = Process.Start(InstallInfo.Exe, "--restore");
-                    if (p != null) p.WaitForExit(10000);
+                    using (var p = Process.Start(InstallInfo.Exe, "--restore"))
+                        if (p != null) p.WaitForExit(RestoreTimeoutMs);
                 }
 
-                if (desktop) InstallInfo.CreateShortcut(InstallInfo.DesktopLink, InstallInfo.Exe);
-                else if (File.Exists(InstallInfo.DesktopLink)) File.Delete(InstallInfo.DesktopLink);
-                if (startMenu) InstallInfo.CreateShortcut(InstallInfo.StartLink, InstallInfo.Exe);
-                else if (File.Exists(InstallInfo.StartLink)) File.Delete(InstallInfo.StartLink);
+                // Mac Look itself is in place now: a shortcut that can't be made (e.g. a redirected or
+                // locked Desktop folder) is reported, but doesn't undo or block the install.
+                string warning = "";
+                if (!Shortcut(desktop, InstallInfo.DesktopLink)) warning += "\nCouldn't update the Desktop shortcut.";
+                if (!Shortcut(startMenu, InstallInfo.StartLink)) warning += "\nCouldn't update the Start menu shortcut.";
                 InstallInfo.SetRunAtLogin(login);
                 InstallInfo.Register(AppVersion, new FileInfo(InstallInfo.Exe).Length / 1024);
 
-                if (launch) Process.Start(InstallInfo.Exe);
+                if (launch) using (Process.Start(InstallInfo.Exe)) { }
                 done = true;
                 buttonText.Text = "Done";
                 button.IsHitTestVisible = true;
                 button.Background = new SolidColorBrush(Color.FromRgb(0x28, 0xA7, 0x45));
                 options.Opacity = 0.5;
                 status.Text = "Mac Look is installed" + (launch ? " and starting now." : ". Open it from the Start menu or your Desktop.") +
-                              "\nIt keeps itself up to date automatically.";
+                              "\nIt keeps itself up to date automatically." + warning;
             }
             catch (Exception ex)
             {
@@ -216,6 +222,35 @@ namespace MacLookSetup
                 button.IsHitTestVisible = true;
                 status.Text = "Setup couldn't finish: " + ex.Message;
             }
+        }
+
+        private const int RestoreTimeoutMs = 10000, CopyAttempts = 10, CopyRetryMs = 300;
+
+        /// <summary>
+        /// The copy we just stopped can keep MacLook.exe locked for a moment after it exits (and antivirus
+        /// scanners often open new files too), so retry briefly before giving up.
+        /// </summary>
+        private static void CopyWithRetry(string from, string to)
+        {
+            for (int i = 1; ; i++)
+            {
+                try { File.Copy(from, to, true); return; }
+                catch (IOException) { if (i >= CopyAttempts) throw; }
+                catch (UnauthorizedAccessException) { if (i >= CopyAttempts) throw; }
+                System.Threading.Thread.Sleep(CopyRetryMs);
+            }
+        }
+
+        /// <summary>Creates (want) or removes (!want) a shortcut to Mac Look; false if that failed.</summary>
+        private static bool Shortcut(bool want, string link)
+        {
+            try
+            {
+                if (want) InstallInfo.CreateShortcut(link, InstallInfo.Exe);
+                else if (File.Exists(link)) File.Delete(link);
+                return true;
+            }
+            catch (Exception) { return false; }
         }
     }
 }
