@@ -25,12 +25,17 @@ while (-not (Test-Path "$out\MacLook.ico") -and (Get-Date) -lt $deadline) { Star
 Remove-Item "$out\MacLook-noicon.exe" -ErrorAction SilentlyContinue
 
 # 2. The real app, with its icon.
-Compile @("/out:$root\MacLook.exe", "/win32icon:$out\MacLook.ico", "$root\src\*.cs")
+Compile @("/out:$root\MacLook.exe", "/win32icon:$out\MacLook.ico", "/win32manifest:$root\src\app.manifest", "$root\src\*.cs")
 
-# 3. The installer, with the app embedded inside it.
+# 3. The installer. It installs the MacLook.exe that sits next to it (it does not carry a copy inside).
 Compile @("/out:$root\MacLookSetup.exe", "/win32icon:$out\MacLook.ico", "/win32manifest:$root\setup\app.manifest",
-          "/resource:$root\MacLook.exe,MacLook.exe",
           "$root\setup\Setup.cs", "$root\src\AppIcon.cs", "$root\src\InstallInfo.cs")
 
 Write-Host "Built $root\MacLook.exe"
 Write-Host "Built $root\MacLookSetup.exe"
+
+# 4. The download: both exes in one zip.
+$zip = "$root\MacLook.zip"
+Remove-Item $zip -ErrorAction SilentlyContinue
+Compress-Archive -Path "$root\MacLookSetup.exe", "$root\MacLook.exe" -DestinationPath $zip
+Write-Host "Built $zip"

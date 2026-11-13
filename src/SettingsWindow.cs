@@ -66,6 +66,8 @@ namespace MacLook
             new[] { "Menu Bar", "", "#5856D6" },
             new[] { "Appearance", "", "#FF9500" },
             new[] { "Glass", "", "#30B0C7" },
+            new[] { "Launchpad", "", "#AF52DE" },
+            new[] { "Hot Corners & Keys", "", "#34C759" },
             new[] { "Icons & Windows", "", "#FF2D55" },
             new[] { "About", "", "#8E8E93" },
         };
@@ -376,6 +378,8 @@ namespace MacLook
                 case "Appearance": Appearance(); break;
                 case "Glass": GlassPage(); break;
                 case "Icons & Windows": IconsPage(); break;
+                case "Launchpad": LaunchpadPage(); break;
+                case "Hot Corners & Keys": HotCornersPage(); break;
                 default: About(); break;
             }
         }
@@ -473,7 +477,16 @@ namespace MacLook
             refresh();
 
             var tools = Buttons(
-                Button("Add App…", () =>
+                Button("Add from Apps…", () =>
+                {
+                    var app = AppPicker.Pick();
+                    if (app == null) return;
+                    Config.Entries.Add(new DockEntry { Name = AppCatalog.DisplayName(app), Target = app.Key });
+                    selected = Config.Entries.Count - 1;
+                    save();
+                    Recapture();
+                }),
+                Button("Add File…", () =>
                 {
                     var dlg = new Microsoft.Win32.OpenFileDialog
                     {
@@ -496,9 +509,17 @@ namespace MacLook
                     selected = Math.Min(selected, Config.Entries.Count - 1);
                     save();
                 }),
+                Button("Rename…", () =>
+                {
+                    if (selected < 0 || selected >= Config.Entries.Count) return;
+                    var e = Config.Entries[selected];
+                    var n = Prompt.Ask("Rename", "New name for “" + e.Name + "” in the Dock:", e.Name);
+                    if (n == null) return;
+                    e.Name = n;
+                    save();
+                }),
                 Button("Move Up", () => move(-1)),
-                Button("Move Down", () => move(1)),
-                Button("Edit as Text…", () => Launcher.Open("notepad.exe", "\"" + Config.DockFile + "\"")));
+                Button("Move Down", () => move(1)));
 
             var st = new StackPanel();
             st.Children.Add(list);
@@ -596,6 +617,73 @@ namespace MacLook
                     Toggle(Settings.AnimateWindows, v => Settings.AnimateWindows = v)),
                 Row("Fully see-through File Explorer", "Mac Look can't safely change what's inside other apps' windows. Windhawk's \"Translucent Windows\" mod does that; see the Windhawk app.",
                     Button("Open Windhawk", () => Launcher.Open("windhawk:")))));
+        }
+        private void LaunchpadPage()
+        {
+            page.Children.Add(Group(
+                Row("Arrange apps", "Drag apps in Launchpad to put them in your own order.",
+                    Segmented(new[] { "A–Z", "Most Used", "My Order" }, new[] { "az", "used", "custom" }, Settings.LaunchpadSort, v => Settings.LaunchpadSort = v)),
+                Row("Icon size", null, Slider(56, 128, Settings.LaunchpadIconSize, "0", v => Settings.LaunchpadIconSize = (int)Math.Round(v))),
+                Row("Windows key opens Launchpad", "Shortcuts like Win+E and Win+D keep working.", Toggle(Settings.WinKeyLaunchpad, v => Settings.WinKeyLaunchpad = v))));
+            page.Children.Add(Group(
+                Row("Tips", "Right-click an app in Launchpad to pin it to the top, rename it, change its icon, add it to the Dock or hide it. Drag apps to move them.", null),
+                Row("Add an app Windows doesn't list", null, Button("Add App…", () => { if (LaunchpadWindow.AddCustomApp()) { Program.Launchpad.ResetTiles(); BuildPage(); } })),
+                Row("Reset Launchpad layout", "Unhides everything and clears pins, renames and your custom order.", Button("Reset", () =>
+                {
+                    LaunchpadPrefs.Reset();
+                    Settings.LaunchpadSort = "az";
+                    Changed();
+                    BuildPage();
+                }))));
+
+            var hidden = AppCatalog.All.Where(a => LaunchpadPrefs.Hidden.Contains(a.Id)).ToList();
+            page.Children.Add(Caption("Hidden apps"));
+            if (hidden.Count == 0)
+            {
+                page.Children.Add(Group(Row("No hidden apps", "Right-click an app in Launchpad and choose Hide from Launchpad.", null)));
+                return;
+            }
+            page.Children.Add(Group(hidden.Select(a => Row(AppCatalog.DisplayName(a), null, Button("Show", () =>
+            {
+                LaunchpadPrefs.Hidden.Remove(a.Id);
+                LaunchpadPrefs.Save();
+                Program.Launchpad.ResetTiles();
+                BuildPage();
+            }))).ToArray()));
+        }
+
+        private UIElement CornerPicker(string current, Action<string> set)
+        {
+            var b = Button(HotCorners.Label(current) + "  ▾", () => { });
+            b.MouseLeftButtonUp += (o, e) =>
+            {
+                var m = new ContextMenu { PlacementTarget = b, Placement = PlacementMode.Bottom };
+                foreach (var a in HotCorners.Actions)
+                {
+                    string key = a[0];
+                    var mi = new MenuItem { Header = a[1], IsChecked = key == current };
+                    mi.Click += (s2, e2) => { set(key); Changed(); BuildPage(); };
+                    m.Items.Add(mi);
+                }
+                m.IsOpen = true;
+            };
+            return b;
+        }
+
+        private void HotCornersPage()
+        {
+            page.Children.Add(Caption("Hot Corners: push the pointer into a corner of the screen"));
+            page.Children.Add(Group(
+                Row("Top-left corner", null, CornerPicker(Settings.HotTopLeft, v => Settings.HotTopLeft = v)),
+                Row("Top-right corner", null, CornerPicker(Settings.HotTopRight, v => Settings.HotTopRight = v)),
+                Row("Bottom-left corner", null, CornerPicker(Settings.HotBottomLeft, v => Settings.HotBottomLeft = v)),
+                Row("Bottom-right corner", null, CornerPicker(Settings.HotBottomRight, v => Settings.HotBottomRight = v))));
+            page.Children.Add(Caption("Keyboard shortcuts"));
+            page.Children.Add(Group(
+                Row("Screenshot shortcuts", "Ctrl+Shift+3: whole screen to your Desktop.  Ctrl+Shift+4: snip an area.  Ctrl+Shift+5: record the screen.",
+                    Toggle(Settings.ScreenshotShortcuts, v => Settings.ScreenshotShortcuts = v)),
+                Row("Force Quit", "Ctrl+Alt+Esc opens Force Quit Applications.", Toggle(Settings.ForceQuitShortcut, v => Settings.ForceQuitShortcut = v)),
+                Row("Other shortcuts", "Spotlight: Alt+Space    Mission Control: Ctrl+Alt+Up    Launchpad: Windows key", null)));
         }
         private void About()
         {

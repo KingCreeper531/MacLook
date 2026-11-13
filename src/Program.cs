@@ -7,8 +7,11 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Mac Look")]
 [assembly: System.Reflection.AssemblyProduct("Mac Look")]
-[assembly: System.Reflection.AssemblyVersion("2.2.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.2.1.0")]
+[assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
+[assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
+[assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
+[assembly: System.Reflection.AssemblyVersion("2.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.3.0.0")]
 
 namespace MacLook
 {
@@ -24,6 +27,9 @@ namespace MacLook
         public static SettingsWindow SettingsWin;
         public static WifiMenuWindow WifiMenu;
         public static SoundMenuWindow SoundMenu;
+        public static ForceQuitWindow ForceQuitWin;
+        public static AboutWindow AboutWin;
+        public static bool IsFullscreen;
         private static System.Windows.Threading.DispatcherTimer applyTimer;
 
         /// <summary>What the desktop looks like behind the menu bar and dock (source for their glass).</summary>
@@ -89,6 +95,8 @@ namespace MacLook
             SettingsWin = new SettingsWindow();
             WifiMenu = new WifiMenuWindow();
             SoundMenu = new SoundMenuWindow();
+            ForceQuitWin = new ForceQuitWindow();
+            AboutWin = new AboutWindow();
 
             // Reserve the menu bar and dock areas first (windows move out of the way), then photograph
             // the empty desktop there before showing anything, so the glass has something real to refract.
@@ -104,6 +112,7 @@ namespace MacLook
                 AppCatalog.Load();
                 WinKey.Install();
                 WindowAnimator.Install();
+                HotCorners.Start();
                 if (Array.IndexOf(args, "--demo") < 0) Updater.Start();
                 if (Array.IndexOf(args, "--demo") >= 0) Demo();
             });
@@ -128,6 +137,7 @@ namespace MacLook
         /// <summary>Hide the bars while a game or video is fullscreen.</summary>
         public static void SetFullscreen(bool fs)
         {
+            IsFullscreen = fs;
             if (!started || recapturing) return;
             if (fs) { MenuBar.Hide(); Dock.Hide(); }
             else { MenuBar.Show(); Dock.Show(); }
@@ -159,6 +169,8 @@ namespace MacLook
                 RefreshGlass();
                 WindowGlass.Reapply();
                 WindowAnimator.ApplySystemAnimation();
+                MenuBar.RegisterShortcuts();
+                Launchpad.ResetTiles();
             }
             catch (Exception ex) { Log(ex); }
         }
@@ -201,12 +213,12 @@ namespace MacLook
             Native.GetCursorPos(out orig);
             var steps = new Action[]
             {
-                () => Native.SetCursorPos(cx, b.Bottom - 1), () => SaveDockArea("1-dock-icons"),
-                () => Native.SetCursorPos(orig.X, orig.Y),
-                () => WifiMenu.Toggle(), () => { }, () => { }, () => SaveCorner("2-wifi-menu"), () => WifiMenu.HidePanel(),
-                () => SoundMenu.Toggle(), () => SaveCorner("3-sound-menu"), () => SoundMenu.HidePanel(),
+                () => AboutWin.Toggle(), () => { }, () => SaveCenter("1-about"), () => AboutWin.HidePanel(),
+                () => ForceQuitWin.Toggle(), () => SaveCenter("2-force-quit"), () => ForceQuitWin.HidePanel(),
+                () => WifiMenu.Toggle(), () => SaveCorner("3-wifi-menu"), () => WifiMenu.HidePanel(),
+                () => SettingsWin.Open("Launchpad"), () => SaveCenter("4-settings"), () => SettingsWin.Hide(),
                 Quit
-            };            int i = 0;
+            };         int i = 0;
             Action next = null;
             next = () =>
             {
@@ -222,6 +234,12 @@ namespace MacLook
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
             int w = Math.Min(b.Width, 1800), h = 260;
             Save(name, ScreenCapture.CaptureRegion(b.Left + (b.Width - w) / 2, b.Bottom - h, w, h));
+        }
+
+        private static void SaveCenter(string name)
+        {
+            var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+            Save(name, ScreenCapture.CaptureRegion(b.Left + b.Width / 2 - 470, b.Top + 150, 940, 760));
         }
 
         private static void SaveCorner(string name)

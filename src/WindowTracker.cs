@@ -142,7 +142,7 @@ namespace MacLook
                     uint cpid;
                     Native.GetWindowThreadProcessId(core, out cpid);
                     string p = Native.GetProcessPath(cpid);
-                    if (p != null) { w.ProcName = Path.GetFileNameWithoutExtension(p); w.ExePath = p; }
+                    if (p != null) { w.ProcName = Path.GetFileNameWithoutExtension(p); w.ExePath = p; w.Pid = cpid; }
                 }
             }
             return w;

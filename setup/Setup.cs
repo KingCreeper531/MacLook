@@ -11,11 +11,15 @@ using System.Windows.Media.Effects;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using MacLook;
+using Path = System.IO.Path;
 
 [assembly: AssemblyTitle("Mac Look Setup")]
+[assembly: AssemblyDescription("Installs Mac Look, a macOS-style desktop for Windows.")]
+[assembly: AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: AssemblyProduct("Mac Look")]
-[assembly: AssemblyVersion("2.2.1.0")]
-[assembly: AssemblyFileVersion("2.2.1.0")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
+[assembly: AssemblyVersion("2.3.0.0")]
+[assembly: AssemblyFileVersion("2.3.0.0")]
 
 namespace MacLookSetup
 {
@@ -44,6 +48,16 @@ namespace MacLookSetup
         private readonly Border button;
         private readonly TextBlock buttonText;
         private bool desktop = true, startMenu = true, login = false, launch = true, done;
+        private static readonly string SourceExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MacLook.exe");
+
+        private static string AppVersion
+        {
+            get
+            {
+                try { var v = FileVersionInfo.GetVersionInfo(SourceExe); return v.FileMajorPart + "." + v.FileMinorPart + "." + v.FileBuildPart; }
+                catch { return "2.3.0"; }
+            }
+        }
 
         public SetupWindow()
         {
@@ -70,7 +84,7 @@ namespace MacLookSetup
             RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
             st.Children.Add(icon);
             st.Children.Add(new TextBlock { Text = "Mac Look", Foreground = Brushes.White, FontSize = 28, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center });
-            st.Children.Add(new TextBlock { Text = "Version 2.2.1", Foreground = Brushes.White, Opacity = 0.55, FontSize = 12.5, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 2, 0, 8) });
+            st.Children.Add(new TextBlock { Text = "Version " + AppVersion, Foreground = Brushes.White, Opacity = 0.55, FontSize = 12.5, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 2, 0, 8) });
             st.Children.Add(new TextBlock
             {
                 Text = "A macOS-style desktop for Windows, in liquid glass:\nmenu bar, Dock, Launchpad, Mission Control and more.",
@@ -168,9 +182,11 @@ namespace MacLookSetup
                 bool wasRunning = Process.GetProcessesByName("MacLook").Length > 0;
                 InstallInfo.StopRunning();
                 Directory.CreateDirectory(InstallInfo.Dir);
-                using (var rs = Assembly.GetExecutingAssembly().GetManifestResourceStream("MacLook.exe"))
-                using (var fs = File.Create(InstallInfo.Exe))
-                    rs.CopyTo(fs);
+                // Mac Look ships next to this installer (in the same zip / folder) rather than inside it.
+                if (!File.Exists(SourceExe))
+                    throw new Exception("MacLook.exe wasn't found next to this installer. Extract the whole zip first, then run MacLookSetup.exe again.");
+                if (!string.Equals(Path.GetFullPath(SourceExe), Path.GetFullPath(InstallInfo.Exe), StringComparison.OrdinalIgnoreCase))
+                    File.Copy(SourceExe, InstallInfo.Exe, true);
                 if (wasRunning)
                 {
                     // We stopped a running copy; put the Windows taskbar back before relaunching.
@@ -183,7 +199,7 @@ namespace MacLookSetup
                 if (startMenu) InstallInfo.CreateShortcut(InstallInfo.StartLink, InstallInfo.Exe);
                 else if (File.Exists(InstallInfo.StartLink)) File.Delete(InstallInfo.StartLink);
                 InstallInfo.SetRunAtLogin(login);
-                InstallInfo.Register("2.2.1", new FileInfo(InstallInfo.Exe).Length / 1024);
+                InstallInfo.Register(AppVersion, new FileInfo(InstallInfo.Exe).Length / 1024);
 
                 if (launch) Process.Start(InstallInfo.Exe);
                 done = true;

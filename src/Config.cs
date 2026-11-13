@@ -225,6 +225,16 @@ namespace MacLook
         public static string IconStyle = "glass";     // original | glass
         public static string WindowFrames = "acrylic"; // off | mica | acrylic
         public static bool AnimateWindows = true;
+        // Launchpad
+        public static string LaunchpadSort = "az";    // az | used | custom
+        public static int LaunchpadIconSize = 84;
+        // Hot corners & shortcuts
+        public static string HotTopLeft = "none";
+        public static string HotTopRight = "none";
+        public static string HotBottomLeft = "none";
+        public static string HotBottomRight = "none";
+        public static bool ScreenshotShortcuts = true;
+        public static bool ForceQuitShortcut = true;
         // Internal
         public static string OriginalWallpaper = "";
         public static bool BuiltinsAdded = false;

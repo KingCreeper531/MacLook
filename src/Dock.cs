@@ -282,7 +282,7 @@ namespace MacLook
                 return;
             }
             double topPx = b.Bottom - (bg.ActualHeight + BottomMargin + 24) * scale;
-            bool inside = dockGrid.IsMouseOver || menuOpen || (p.Y >= topPx && p.X >= left && p.X <= right);
+            bool inside = dockGrid.IsMouseOver || menuOpen || dragging || (p.Y >= topPx && p.X >= left && p.X <= right);
             if (inside) { leftAt = DateTime.MinValue; return; }
             if (leftAt == DateTime.MinValue) leftAt = DateTime.Now;
             else if ((DateTime.Now - leftAt).TotalMilliseconds > 400) HideDock();
@@ -501,9 +501,29 @@ namespace MacLook
             g.Children.Add(dot);
 
             g.MouseEnter += (s, e) => ShowLabel(it);
-            g.MouseLeftButtonDown += (s, e) => { img.Opacity = 0.65; e.Handled = true; };
-            g.MouseLeftButtonUp += (s, e) => { img.Opacity = 1; e.Handled = true; Click(it); };
-            g.MouseLeave += (s, e) => img.Opacity = 1;
+            g.MouseLeftButtonDown += (s, e) =>
+            {
+                img.Opacity = 0.65; e.Handled = true;
+                pressItem = it; pressPoint = e.GetPosition(this);
+                g.CaptureMouse();
+            };
+            g.MouseMove += (s, e) =>
+            {
+                if (pressItem != it || !g.IsMouseCaptured) return;
+                var p = e.GetPosition(this);
+                if (!dragging && it.Entry != null && (Math.Abs(p.X - pressPoint.X) > 6 || Math.Abs(p.Y - pressPoint.Y) > 6)) BeginDrag(it);
+                if (dragging) UpdateDrag(p);
+            };
+            g.MouseLeftButtonUp += (s, e) =>
+            {
+                img.Opacity = 1; e.Handled = true;
+                bool wasDrag = dragging;
+                if (dragging) EndDrag();
+                g.ReleaseMouseCapture();
+                if (!wasDrag && pressItem == it) Click(it);
+                pressItem = null;
+            };
+            g.MouseLeave += (s, e) => { if (!dragging) img.Opacity = 1; };
             g.MouseRightButtonUp += (s, e) => { e.Handled = true; ShowMenu(it); };
 
             it.Img = img;
@@ -608,6 +628,91 @@ namespace MacLook
                 CompositionTarget.Rendering -= OnFrame;
                 animating = false;
             }
+        }
+
+        // ------------------------------------------------------------------ drag to rearrange / remove
+        private DockItem pressItem, dragItem;
+        private Point pressPoint;
+        private bool dragging, dragRemove;
+        private int dragInsert;
+        private Image ghost;
+        private TextBlock removeTag;
+
+        private void BeginDrag(DockItem it)
+        {
+            dragging = true;
+            dragItem = it;
+            hovering = false; hovered = null;
+            label.Visibility = Visibility.Collapsed;
+            StartAnim();
+            it.View.Opacity = 0.25;
+            ghost = new Image { Source = it.Img.Source, Width = Base * 1.15, Height = Base * 1.15, IsHitTestVisible = false };
+            RenderOptions.SetBitmapScalingMode(ghost, BitmapScalingMode.HighQuality);
+            removeTag = new TextBlock { Text = "Remove", Foreground = Brushes.White, FontSize = 12, FontWeight = FontWeights.SemiBold, Visibility = Visibility.Collapsed, IsHitTestVisible = false };
+            overlay.Children.Add(ghost);
+            overlay.Children.Add(removeTag);
+        }
+
+        private void UpdateDrag(Point p)
+        {
+            Canvas.SetLeft(ghost, p.X - ghost.Width / 2);
+            Canvas.SetTop(ghost, p.Y - ghost.Height / 2);
+            double bgTop;
+            try { bgTop = bg.TranslatePoint(new Point(0, 0), this).Y; } catch { bgTop = ActualHeight - Base; }
+            dragRemove = p.Y < bgTop - 70;
+            ghost.Opacity = dragRemove ? 0.55 : 0.95;
+            removeTag.Visibility = dragRemove ? Visibility.Visible : Visibility.Collapsed;
+            Canvas.SetLeft(removeTag, p.X - 22);
+            Canvas.SetTop(removeTag, p.Y - ghost.Height / 2 - 20);
+
+            // Where it would land among the pinned apps.
+            var pinned = items.Where(i => i.Entry != null).ToList();
+            dragInsert = 0;
+            foreach (var i in pinned)
+            {
+                if (i == dragItem) continue;
+                double cx;
+                try { cx = i.View.TranslatePoint(new Point(i.View.ActualWidth / 2, 0), this).X; } catch { continue; }
+                if (p.X > cx) dragInsert++;
+            }
+        }
+
+        private void EndDrag()
+        {
+            dragging = false;
+            var it = dragItem;
+            dragItem = null;
+            if (it == null) return;
+            it.View.Opacity = 1;
+            double gx = Canvas.GetLeft(ghost), gy = Canvas.GetTop(ghost);
+            overlay.Children.Remove(removeTag);
+            if (dragRemove)
+            {
+                // "Poof": the icon swells and vanishes.
+                var g2 = ghost;
+                var st = new ScaleTransform(1, 1);
+                g2.RenderTransformOrigin = new Point(0.5, 0.5);
+                g2.RenderTransform = st;
+                var dur = TimeSpan.FromMilliseconds(260);
+                st.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 1.6, dur));
+                st.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 1.6, dur));
+                var fade = new DoubleAnimation(g2.Opacity, 0, dur);
+                fade.Completed += (s, e) => overlay.Children.Remove(g2);
+                g2.BeginAnimation(OpacityProperty, fade);
+                Config.Entries.Remove(it.Entry);
+            }
+            else
+            {
+                overlay.Children.Remove(ghost);
+                var list = Config.Entries;
+                int from = list.IndexOf(it.Entry);
+                if (from < 0) return;
+                list.RemoveAt(from);
+                list.Insert(Math.Max(0, Math.Min(dragInsert, list.Count)), it.Entry);
+            }
+            ghost = null;
+            try { Config.SaveDock(); } catch (Exception ex) { Program.Log(ex); }
+            Reload();
         }
 
         // ------------------------------------------------------------------ actions

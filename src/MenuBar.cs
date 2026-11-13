@@ -200,13 +200,13 @@ namespace MacLook
         private ContextMenu LogoMenu()
         {
             return Menu(
-                MI("About This PC", null, () => Launcher.Open("ms-settings:about")),
+                MI("About This PC", null, () => Program.AboutWin.Toggle()),
                 null,
                 MI("Mac Look Settings…", null, () => Program.SettingsWin.Open("General")),
                 MI("System Settings…", null, () => Launcher.Open("ms-settings:")),
                 MI("App Store…", null, () => Launcher.Open("ms-windows-store:")),
                 null,
-                MI("Force Quit…", "Ctrl+Shift+Esc", () => Launcher.Open("taskmgr.exe")),
+                MI("Force Quit…", Settings.ForceQuitShortcut ? "Ctrl+Alt+Esc" : null, () => Program.ForceQuitWin.Toggle()),
                 null,
                 MI("Sleep", null, Power.Sleep),
                 MI("Restart…", null, Power.Restart),
@@ -352,7 +352,8 @@ namespace MacLook
                 MI("Set Mac-Style Wallpaper", null, () => { try { Wallpaper.SetMacStyle(); Program.RecaptureDesktop(); } catch (Exception ex) { Program.Log(ex); } }),
                 MI("Restore Original Wallpaper", null, Wallpaper.CanRestore ? new Action(Wallpaper.Restore) : null),
                 null,
-                MI("Edit Dock Items…", null, () => Launcher.Open("notepad.exe", "\"" + Config.DockFile + "\"")),
+                MI("Edit Dock…", null, () => Program.SettingsWin.Open("Dock")),
+                MI("Customize Launchpad…", null, () => Program.SettingsWin.Open("Launchpad")),
                 MI("Reload Dock", null, () => Program.Dock.Reload()),
                 null,
                 MI("Quit Mac Look", null, Program.Quit));
@@ -403,6 +404,7 @@ namespace MacLook
             Reposition();
             if (!Native.RegisterHotKey(hwnd, HotkeyId, Native.MOD_ALT | Native.MOD_NOREPEAT, Native.VK_SPACE))
                 Program.Log("Alt+Space is already taken by another app; use the magnifier in the menu bar instead.");
+            RegisterShortcuts();
             if (!Native.RegisterHotKey(hwnd, MissionHotkeyId, Native.MOD_ALT | Native.MOD_CONTROL | Native.MOD_NOREPEAT, 0x26))
                 Program.Log("Ctrl+Alt+Up is already taken; open Mission Control from the dock instead.");
 
@@ -412,7 +414,7 @@ namespace MacLook
             slow = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             slow.Tick += (s, a) => SlowTick();
             slow.Start();
-            Closed += (s, a) => { Native.UnregisterHotKey(hwnd, HotkeyId); Native.UnregisterHotKey(hwnd, MissionHotkeyId); };
+            Closed += (s, a) => { Native.UnregisterHotKey(hwnd, HotkeyId); Native.UnregisterHotKey(hwnd, MissionHotkeyId); UnregisterShortcuts(); };
             IsVisibleChanged += (s, a) => { if (IsVisible) Dispatcher.BeginInvoke(new Action(ApplyGlass), DispatcherPriority.Loaded); };
         }
 
@@ -426,6 +428,26 @@ namespace MacLook
             AppBar.Set(hwnd, Native.ABE_TOP, (int)Math.Round(BarHeight * scale));
         }
 
+        private const int ShotHotkey = 0x4E30, ForceQuitHotkey = 0x4E33;
+
+        /// <summary>Ctrl+Shift+3/4/5 screenshots and Ctrl+Alt+Esc Force Quit (re-applied when Settings change).</summary>
+        public void RegisterShortcuts()
+        {
+            UnregisterShortcuts();
+            if (hwnd == IntPtr.Zero) return;
+            uint cs = Native.MOD_CONTROL | 0x4 | Native.MOD_NOREPEAT;   // Ctrl+Shift
+            if (Settings.ScreenshotShortcuts)
+                for (int i = 0; i < 3; i++)
+                    if (!Native.RegisterHotKey(hwnd, ShotHotkey + i, cs, (uint)('3' + i)))
+                        Program.Log("Ctrl+Shift+" + (3 + i) + " is already used by another app.");
+            if (Settings.ForceQuitShortcut && !Native.RegisterHotKey(hwnd, ForceQuitHotkey, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, 0x1B))
+                Program.Log("Ctrl+Alt+Esc is already used by another app.");
+        }
+
+        private void UnregisterShortcuts()
+        {
+            for (int i = ShotHotkey; i <= ForceQuitHotkey; i++) Native.UnregisterHotKey(hwnd, i);
+        }
         /// <summary>Liquid glass from the desktop snapshot; acrylic if there is no snapshot yet.</summary>
         public void ApplyGlass()
         {
@@ -446,6 +468,15 @@ namespace MacLook
             if (msg == Native.WM_HOTKEY && wParam.ToInt32() == HotkeyId)
             {
                 Program.Spotlight.Toggle();
+                handled = true;
+            }
+            else if (msg == Native.WM_HOTKEY && wParam.ToInt32() >= ShotHotkey && wParam.ToInt32() <= ForceQuitHotkey)
+            {
+                int id = wParam.ToInt32();
+                if (id == ShotHotkey) Screenshots.FullScreen();
+                else if (id == ShotHotkey + 1) Screenshots.Region();
+                else if (id == ShotHotkey + 2) Screenshots.Record();
+                else Program.ForceQuitWin.Toggle();
                 handled = true;
             }
             else if (msg == Native.WM_HOTKEY && wParam.ToInt32() == MissionHotkeyId)

@@ -115,8 +115,9 @@ namespace MacLook
                 if (calc != null)
                     current.Add(new Result { Title = calc, Subtitle = "Calculator — press Enter to copy", IconGlyph = "", Run = () => Clipboard.SetText(calc) });
 
-                var ranked = AppCatalog.Apps
-                    .Select(a => new { a, s = AppCatalog.Score(a.Name, q) })
+                var ranked = AppCatalog.All
+                    .Where(a => !LaunchpadPrefs.Hidden.Contains(a.Id))
+                    .Select(a => new { a, s = AppCatalog.Score(AppCatalog.DisplayName(a), q) })
                     .Where(x => x.s > 0)
                     .OrderByDescending(x => x.s).ThenBy(x => x.a.Name.Length)
                     .Take(7);
@@ -125,8 +126,8 @@ namespace MacLook
                     var a = x.a;
                     current.Add(new Result
                     {
-                        Title = a.Name, Subtitle = "Application",
-                        Icon = IconStyler.Get("shell:AppsFolder\\" + a.Path, 64),
+                        Title = AppCatalog.DisplayName(a), Subtitle = "Application",
+                        Icon = IconStyler.Get(a.Key, 64),
                         Run = () => AppCatalog.Launch(a)
                     });
                 }

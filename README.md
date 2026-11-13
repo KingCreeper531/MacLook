@@ -14,12 +14,15 @@ A macOS-style desktop for Windows 11, rendered in liquid glass. One small `.exe`
 - **Premium icons**: every app icon on a glossy rounded plate, or set your own PNG per app (right-click → Change Icon…).
 - **Glass window frames**: frosted title bars and rounded corners on every app window, including File Explorer.
 - **Window animations**: a genie effect when you minimize into the dock, and a fade when you close.
+- **Customizable Launchpad**: pin apps to the top, drag to rearrange, rename, hide, change icons, add your own apps.
+- **Hot Corners**, **screenshot shortcuts** (Ctrl+Shift+3 / 4 / 5 with a floating preview), **Force Quit** (Ctrl+Alt+Esc) and **About This PC**.
+- **Dock editing like a Mac**: drag icons to reorder, drag one off the Dock to remove it.
 - **Settings** window for dock size, magnification, auto-hide, clock format, light/dark, accent colour, glass frost/tint/refraction/shine, and the apps in your dock.
 
 ## Install
 
-1. Download **`MacLookSetup.exe`** from the [latest release](https://github.com/KingCreeper531/MacLook/releases/latest).
-2. Run it and click **Install**. It installs just for you (no admin prompt), adds Start menu and Desktop shortcuts, and can open Mac Look at sign-in.
+1. Download **`MacLook.zip`** from the [latest release](https://github.com/KingCreeper531/MacLook/releases/latest) and extract it.
+2. Run **`MacLookSetup.exe`** and click **Install**. It installs just for you (no admin prompt), adds Start menu and Desktop shortcuts, and can open Mac Look at sign-in.
 
 Prefer no installer? Download `MacLook.exe` instead and run it from anywhere.
 
@@ -38,6 +41,10 @@ Mac Look hides the Windows taskbar while it runs and puts it back when you quit 
 ```
 MacLook.exe --restore
 ```
+
+## Antivirus warnings
+
+Mac Look is not code-signed yet, so a few antivirus engines may flag it as "unknown" (it hides the taskbar, watches the Windows key and takes screenshots for the glass effect, which heuristic scanners sometimes dislike). All the source code is in this repo, and you can build it yourself with `build.ps1`.
 
 ## Fully see-through File Explorer
 
