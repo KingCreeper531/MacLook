@@ -19,7 +19,8 @@ namespace MacLook
     /// </summary>
     internal static class WindowButtons
     {
-        private const uint EVENT_SYSTEM_FOREGROUND = 3, EVENT_SYSTEM_MINIMIZESTART = 0x16, EVENT_SYSTEM_MINIMIZEEND = 0x17;
+        private const uint EVENT_SYSTEM_FOREGROUND = 3, EVENT_SYSTEM_MOVESIZESTART = 0x0A, EVENT_SYSTEM_MOVESIZEEND = 0x0B, EVENT_SYSTEM_MINIMIZESTART = 0x16, EVENT_SYSTEM_MINIMIZEEND = 0x17;
+        private const int TrackAfterMoveMs = 300;   // keep following a little after a window stops (snap / maximize settle)
         private const uint EVENT_OBJECT_DESTROY = 0x8001, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_HIDE = 0x8003, EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         private const uint WINEVENT_SKIPOWNPROCESS = 2;
         private const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
@@ -33,6 +34,42 @@ namespace MacLook
         private static IntPtr sysHook, showHook, moveHook;
         private static bool running;
 
+        // Windows being dragged, resized, snapped or maximized: their buttons are re-placed on every screen refresh.
+        private static readonly Dictionary<ButtonsOverlay, DateTime> tracking = new Dictionary<ButtonsOverlay, DateTime>();
+        private static bool frameLoop;
+
+        private static void Track(IntPtr h, DateTime until)
+        {
+            ButtonsOverlay o;
+            if (!overlays.TryGetValue(h, out o)) return;
+            DateTime cur;
+            if (!tracking.TryGetValue(o, out cur) || cur < until) tracking[o] = until;
+            if (!frameLoop) { frameLoop = true; CompositionTarget.Rendering += OnFrame; Smooth.Begin(); }
+        }
+
+        private static void OnFrame(object sender, EventArgs e)
+        {
+            try
+            {
+                var now = DateTime.Now;
+                foreach (var kv in tracking.ToList())
+                {
+                    if (kv.Key.IsClosed || now > kv.Value) { tracking.Remove(kv.Key); continue; }
+                    kv.Key.Follow();
+                }
+            }
+            catch (Exception ex) { Program.Log(ex); tracking.Clear(); }
+            if (tracking.Count == 0) StopFrames();
+        }
+
+        private static void StopFrames()
+        {
+            if (!frameLoop) return;
+            frameLoop = false;
+            CompositionTarget.Rendering -= OnFrame;
+            Smooth.End();
+        }
+
         public static void Start()
         {
             if (running) Stop();
@@ -40,6 +77,9 @@ namespace MacLook
             proc = OnEvent;
             sysHook = Native.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS);
             showHook = Native.SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS);
+            // Moves of ANY window, whoever moves it (the app itself, snapping tools, FancyZones...).
+            // Filtered to windows with Mac buttons right at the top of OnEvent, so it stays cheap.
+            moveHook = Native.SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS);
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SyncEveryMs) };
             timer.Tick += (s, e) => Sync();
             timer.Start();
@@ -57,6 +97,8 @@ namespace MacLook
             if (soon != null) soon.Stop();
             foreach (var h in new[] { sysHook, showHook, moveHook }) if (h != IntPtr.Zero) Native.UnhookWinEvent(h);
             sysHook = showHook = moveHook = IntPtr.Zero;
+            tracking.Clear();
+            StopFrames();
             foreach (var h in overlays.Keys.ToList()) Remove(h);
         }
 
@@ -72,6 +114,7 @@ namespace MacLook
         private static void OnEvent(IntPtr hook, uint ev, IntPtr h, int idObject, int idChild, uint thread, uint time)
         {
             if (!running || idObject != 0 || h == IntPtr.Zero) return;
+            if (ev == EVENT_OBJECT_LOCATIONCHANGE && !overlays.ContainsKey(h)) return;   // most move events: not ours
             // Called from inside the message loop: nothing may escape from here.
             try
             {
@@ -98,7 +141,15 @@ namespace MacLook
                         if (overlays.ContainsKey(h)) Remove(h);
                         break;
                     case EVENT_OBJECT_LOCATIONCHANGE:
-                        if (overlays.TryGetValue(h, out o)) o.Position();
+                        if (overlays.TryGetValue(h, out o)) { o.Follow(); Track(h, DateTime.Now.AddMilliseconds(TrackAfterMoveMs)); }
+                        break;
+                    case EVENT_SYSTEM_MOVESIZESTART:
+                        Track(h, DateTime.MaxValue);   // follow every frame for the whole drag / resize
+                        break;
+                    case EVENT_SYSTEM_MOVESIZEEND:
+                        if (overlays.TryGetValue(h, out o)) { o.Follow(); Track(h, DateTime.Now.AddMilliseconds(TrackAfterMoveMs)); }
+                        ButtonsOverlay done;
+                        if (overlays.TryGetValue(h, out done) && tracking.ContainsKey(done)) tracking[done] = DateTime.Now.AddMilliseconds(TrackAfterMoveMs);
                         break;
                 }
             }
@@ -109,11 +160,6 @@ namespace MacLook
         {
             if (h == IntPtr.Zero || WindowTracker.IsOwn(h)) return;   // our own menus / panels don't count
             foreach (var kv in overlays) kv.Value.SetActive(kv.Key == h);
-            // Follow the active window's moves smoothly (its process only, to stay light).
-            if (moveHook != IntPtr.Zero) { Native.UnhookWinEvent(moveHook); moveHook = IntPtr.Zero; }
-            uint pid;
-            Native.GetWindowThreadProcessId(h, out pid);
-            if (pid != 0) moveHook = Native.SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, proc, pid, 0, WINEVENT_SKIPOWNPROCESS);
         }
 
         private static void Sync()
@@ -188,7 +234,6 @@ namespace MacLook
         }
     }
 
-    /// <summary>The red / yellow / green buttons for one window (gray when that window isn't active, like macOS).</summary>
     /// <summary>
     /// What the Mac window buttons look like and where they go, shared by the live overlay and by the
     /// window pictures used for animations (WindowAnimator), so both always match.
@@ -239,7 +284,10 @@ namespace MacLook
         private const int DWMWA_CAPTION_BUTTON_BOUNDS = 5, GWLP_HWNDPARENT = -8;
 
         private readonly IntPtr target;
+        private readonly IntPtr self;
         private readonly double scale = 1;
+        private int px, py, pw, ph;   // where the overlay currently is (physical pixels)
+        private const uint SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_NOOWNERZORDER = 0x200, SWP_NOSENDCHANGING = 0x400;
         private readonly Ellipse[] dots = new Ellipse[3];
         private readonly TextBlock[] symbols = new TextBlock[3];
         private readonly StackPanel row;
@@ -266,6 +314,7 @@ namespace MacLook
             Content = patch;
 
             var hwnd = new WindowInteropHelper(this).EnsureHandle();
+            self = hwnd;
             scale = HwndSource.FromHwnd(hwnd).CompositionTarget.TransformToDevice.M11;
             long ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
             Native.SetWindowLongPtr(hwnd, Native.GWL_EXSTYLE, new IntPtr(ex | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
@@ -285,6 +334,8 @@ namespace MacLook
         {
             if (!closed && IsVisible) Hide();
         }
+
+        public bool IsClosed { get { return closed; } }
 
         private UIElement Light(int i)
         {
@@ -326,8 +377,12 @@ namespace MacLook
             if (a == isActive) return;
             isActive = a;
             Paint();
-            // The title bar changes colour when a window gains / loses focus; re-sample once it has repainted.
-            Launcher.Later(80, () => { sampled = false; Position(); });
+            // The title bar changes colour when a window gains / loses focus. Re-check right away and again as
+            // it finishes repainting, so the patch never sits there in the old colour.
+            sampled = false;
+            Position();
+            Launcher.Later(40, () => { sampled = false; Position(); });
+            Launcher.Later(160, () => { sampled = false; Position(); });
         }
 
         public void Position()
@@ -345,10 +400,7 @@ namespace MacLook
                 patch.Background = Brushes.Transparent;
                 row.HorizontalAlignment = HorizontalAlignment.Left;
                 row.Margin = new Thickness(2);
-                Width = 70; Height = 18;
-                Left = (r.Left + 10 * scale) / scale;
-                Top = (r.Top + (Native.IsZoomed(target) ? 8 : 9) * scale) / scale;
-                if (!IsVisible) Show();
+                Place((int)(r.Left + 10 * scale), (int)(r.Top + (Native.IsZoomed(target) ? 8 : 9) * scale), (int)(70 * scale), (int)(18 * scale));
                 return;
             }
 
@@ -384,11 +436,57 @@ namespace MacLook
             }
             row.HorizontalAlignment = HorizontalAlignment.Right;
             row.Margin = new Thickness(0, 0, MacButtons.RightMargin, 0);
-            Width = Math.Max(76, bw / scale);
-            Height = Math.Max(20, bh / scale);
-            Left = bx / scale;
-            Top = by / scale;
-            if (!IsVisible) Show();
+            Place((int)bx, (int)by, (int)Math.Max(76 * scale, bw), (int)Math.Max(20 * scale, bh));
+        }
+
+        /// <summary>
+        /// Move / size the overlay with one direct call (no WPF layout pass), only when something changed,
+        /// and show it only if it is hidden: no flicker from repeated Show()/resize.
+        /// </summary>
+        private void Place(int x, int y, int w, int h)
+        {
+            if (closed || w <= 0 || h <= 0) return;
+            if (!IsVisible)
+            {
+                // Showing: let WPF place it, so it doesn't apply its own default size/position on Show().
+                Left = x / scale; Top = y / scale; Width = w / scale; Height = h / scale;
+                Show();
+                px = x; py = y; pw = w; ph = h;
+                return;
+            }
+            bool sizeChanged = w != pw || h != ph;
+            if (x != px || y != py || sizeChanged)
+            {
+                uint flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | (sizeChanged ? 0 : SWP_NOSIZE);
+                Native.SetWindowPos(self, IntPtr.Zero, x, y, w, h, flags);
+                px = x; py = y; pw = w; ph = h;
+            }
+        }
+
+        /// <summary>Called every frame while the window moves: just re-place, no colour sampling.</summary>
+        public void Follow()
+        {
+            if (closed) return;
+            if (!Native.IsWindow(target) || Native.IsIconic(target) || !Native.IsWindowVisible(target)) { HideOverlay(); return; }
+            var r = Native.FrameRect(target);
+            if (r.Right - r.Left < 200 || r.Bottom - r.Top < 80) { HideOverlay(); return; }
+            if (r.Left != lastRect.Left || r.Top != lastRect.Top || r.Right != lastRect.Right || r.Bottom != lastRect.Bottom) lastMove = DateTime.Now;
+            bool resized = (r.Right - r.Left) != (lastRect.Right - lastRect.Left) || (r.Bottom - r.Top) != (lastRect.Bottom - lastRect.Top);
+            lastRect = r;
+            if (resized) { Position(); return; }   // size changed: caption buttons may have moved; do the full layout
+            if (Settings.WindowButtons == "left")
+            {
+                Place((int)(r.Left + 10 * scale), (int)(r.Top + (Native.IsZoomed(target) ? 8 : 9) * scale), pw, ph);
+                return;
+            }
+            Native.RECT wr, cb;
+            Native.GetWindowRect(target, out wr);
+            if (Native.DwmGetWindowAttribute(target, DWMWA_CAPTION_BUTTON_BOUNDS, out cb, 16) == 0 && cb.Right - cb.Left > 20)
+            {
+                int by = Math.Max(wr.Top + cb.Top, r.Top);
+                Place(wr.Left + cb.Left, by, pw, ph);
+            }
+            else Place((int)(r.Right - 138 * scale), r.Top, pw, ph);
         }
 
         private static readonly Color DefaultPatch = Color.FromRgb(32, 32, 32);

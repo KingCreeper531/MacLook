@@ -18,8 +18,8 @@ using Path = System.IO.Path;
 [assembly: AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: AssemblyProduct("Mac Look")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.5.1.0")]
+[assembly: AssemblyFileVersion("2.5.1.0")]
 
 namespace MacLookSetup
 {
