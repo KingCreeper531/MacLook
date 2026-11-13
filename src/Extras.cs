@@ -44,7 +44,9 @@ namespace MacLook
             buttons.Children.Add(Ui.PillButton("Cancel", false, () => Close()));
             buttons.Children.Add(Ui.PillButton("OK", true, () => { ok = true; Close(); }));
             st.Children.Add(buttons);
-            Content = Ui.Card(st);
+            var card = Ui.Card(st);
+            Content = card;
+            Ui.Glassify(this, card);
             Loaded += (s, e) => { box.Focus(); box.SelectAll(); };
             PreviewKeyDown += (s, e) =>
             {
@@ -98,6 +100,7 @@ namespace MacLook
             grid.Children.Add(buttons);
             var card = Ui.Card(grid);
             Content = card;
+            Ui.Glassify(this, card);
             Loaded += (s, e) => { search.Focus(); Fill(); };
             PreviewKeyDown += (s, e) => { if (e.Key == Key.Escape) Close(); };
         }
@@ -138,9 +141,17 @@ namespace MacLook
 
     internal static class Ui
     {
+        /// <summary>Give a dialog's card real liquid glass, refracting whatever was on screen when it opened.</summary>
+        public static void Glassify(Window w, Border card)
+        {
+            var snap = ScreenCapture.Capture();
+            if (snap == null) return;
+            w.Loaded += (s, e) => w.Dispatcher.BeginInvoke(new Action(() => GlassFx.Apply(card, snap, GlassStyles.Window)), DispatcherPriority.Loaded);
+        }
+
         public static Border Card(UIElement child)
         {
-            var b = new Border { CornerRadius = new CornerRadius(16), Padding = new Thickness(20, 18, 20, 18), Margin = new Thickness(24), Child = child, BorderThickness = new Thickness(1) };
+            var b = new Border { CornerRadius = new CornerRadius(20), Padding = new Thickness(20, 18, 20, 18), Margin = new Thickness(24), Child = child, BorderThickness = new Thickness(1), UseLayoutRounding = true };
             b.SetResourceReference(Border.BackgroundProperty, "MenuBg");
             b.SetResourceReference(Border.BorderBrushProperty, "MenuBorder");
             b.Effect = new DropShadowEffect { BlurRadius = 30, ShadowDepth = 8, Direction = 270, Opacity = 0.35 };

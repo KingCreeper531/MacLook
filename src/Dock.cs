@@ -725,6 +725,11 @@ namespace MacLook
                 return;
             }
             if (string.IsNullOrEmpty(it.LaunchTarget)) return;
+            if (Settings.MacSettingsForWindows && it.LaunchTarget.IndexOf("immersivecontrolpanel", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                Program.SettingsWin.Open("General");
+                return;
+            }
             if (!it.IsFolder && !it.IsBuiltin && Settings.BounceOnLaunch) Bounce(it);
             Launcher.Open(it.LaunchTarget, it.Args);
         }

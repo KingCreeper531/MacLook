@@ -14,6 +14,9 @@ A macOS-style desktop for Windows 11, rendered in liquid glass. One small `.exe`
 - **Premium icons**: every app icon on a glossy rounded plate, or set your own PNG per app (right-click → Change Icon…).
 - **Glass window frames**: frosted title bars and rounded corners on every app window, including File Explorer.
 - **Window animations**: a genie effect when you minimize into the dock, and a fade when you close.
+- **Window switcher (Alt+Tab)**: every open window as a live card on a glass panel, with a gliding highlight; let go to zoom into the window you picked.
+- **Traffic lights**: Mac red / yellow / green buttons on the active window (left, right, or off).
+- **System Settings for Windows**: a Mac-style settings app with a searchable sidebar covering Wi-Fi, Bluetooth, Sound, Displays, Wallpaper, Storage, Users, Privacy and more, plus every Mac Look option.
 - **Customizable Launchpad**: pin apps to the top, drag to rearrange, rename, hide, change icons, add your own apps.
 - **Hot Corners**, **screenshot shortcuts** (Ctrl+Shift+3 / 4 / 5 with a floating preview), **Force Quit** (Ctrl+Alt+Esc) and **About This PC**.
 - **Dock editing like a Mac**: drag icons to reorder, drag one off the Dock to remove it.

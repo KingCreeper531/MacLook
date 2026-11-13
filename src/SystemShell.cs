@@ -205,6 +205,19 @@ namespace MacLook
             Native.SystemParametersInfoSet(Native.SPI_SETDESKWALLPAPER, 0, path, 3);
         }
 
+        /// <summary>Use any picture as the wallpaper (remembering the original so it can be restored).</summary>
+        public static void SetImage(string path)
+        {
+            if (string.IsNullOrEmpty(Settings.OriginalWallpaper))
+            {
+                var sb = new StringBuilder(1024);
+                Native.SystemParametersInfoGet(Native.SPI_GETDESKWALLPAPER, (uint)sb.Capacity, sb, 0);
+                Settings.OriginalWallpaper = sb.ToString();
+                Settings.Save();
+            }
+            Native.SystemParametersInfoSet(Native.SPI_SETDESKWALLPAPER, 0, path, 3);
+        }
+
         public static bool CanRestore { get { return !string.IsNullOrEmpty(Settings.OriginalWallpaper); } }
 
         public static void Restore()

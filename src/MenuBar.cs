@@ -203,7 +203,7 @@ namespace MacLook
                 MI("About This PC", null, () => Program.AboutWin.Toggle()),
                 null,
                 MI("Mac Look Settings…", null, () => Program.SettingsWin.Open("General")),
-                MI("System Settings…", null, () => Launcher.Open("ms-settings:")),
+                MI("System Settings…", null, () => { if (Settings.MacSettingsForWindows) Program.SettingsWin.Open("General"); else Launcher.Open("ms-settings:"); }),
                 MI("App Store…", null, () => Launcher.Open("ms-windows-store:")),
                 null,
                 MI("Force Quit…", Settings.ForceQuitShortcut ? "Ctrl+Alt+Esc" : null, () => Program.ForceQuitWin.Toggle()),

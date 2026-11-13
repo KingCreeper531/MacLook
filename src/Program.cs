@@ -10,8 +10,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("2.4.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.4.0.0")]
 
 namespace MacLook
 {
@@ -29,6 +29,8 @@ namespace MacLook
         public static SoundMenuWindow SoundMenu;
         public static ForceQuitWindow ForceQuitWin;
         public static AboutWindow AboutWin;
+        public static SwitcherWindow Switcher;
+        public static TrafficLightsWindow Lights;
         public static bool IsFullscreen;
         private static System.Windows.Threading.DispatcherTimer applyTimer;
 
@@ -97,6 +99,8 @@ namespace MacLook
             SoundMenu = new SoundMenuWindow();
             ForceQuitWin = new ForceQuitWindow();
             AboutWin = new AboutWindow();
+            Switcher = new SwitcherWindow();
+            Lights = new TrafficLightsWindow();
 
             // Reserve the menu bar and dock areas first (windows move out of the way), then photograph
             // the empty desktop there before showing anything, so the glass has something real to refract.
@@ -113,6 +117,7 @@ namespace MacLook
                 WinKey.Install();
                 WindowAnimator.Install();
                 HotCorners.Start();
+                Lights.Start();
                 if (Array.IndexOf(args, "--demo") < 0) Updater.Start();
                 if (Array.IndexOf(args, "--demo") >= 0) Demo();
             });
@@ -170,6 +175,7 @@ namespace MacLook
                 WindowGlass.Reapply();
                 WindowAnimator.ApplySystemAnimation();
                 MenuBar.RegisterShortcuts();
+                Lights.Refresh();
                 Launchpad.ResetTiles();
             }
             catch (Exception ex) { Log(ex); }
@@ -213,12 +219,13 @@ namespace MacLook
             Native.GetCursorPos(out orig);
             var steps = new Action[]
             {
-                () => AboutWin.Toggle(), () => { }, () => SaveCenter("1-about"), () => AboutWin.HidePanel(),
-                () => ForceQuitWin.Toggle(), () => SaveCenter("2-force-quit"), () => ForceQuitWin.HidePanel(),
-                () => WifiMenu.Toggle(), () => SaveCorner("3-wifi-menu"), () => WifiMenu.HidePanel(),
-                () => SettingsWin.Open("Launchpad"), () => SaveCenter("4-settings"), () => SettingsWin.Hide(),
+                () => Switcher.Open(false), () => SaveCenter("1-switcher"), () => Switcher.Next(), () => SaveCenter("2-switcher-next"), () => Switcher.Cancel(),
+                () => SaveLights("3-traffic-lights"),
+                () => SettingsWin.Open("Sound"), () => SaveCenter("4-settings-sound"),
+                () => SettingsWin.Open("Storage"), () => SaveCenter("5-settings-storage"),
+                () => SettingsWin.Open("Wallpaper"), () => SaveCenter("6-settings-wallpaper"), () => SettingsWin.Hide(),
                 Quit
-            };         int i = 0;
+            };        int i = 0;
             Action next = null;
             next = () =>
             {
@@ -239,7 +246,13 @@ namespace MacLook
         private static void SaveCenter(string name)
         {
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-            Save(name, ScreenCapture.CaptureRegion(b.Left + b.Width / 2 - 470, b.Top + 150, 940, 760));
+            Save(name, ScreenCapture.CaptureRegion(b.Left + b.Width / 2 - 700, b.Top + 120, 1400, 900));
+        }
+
+        private static void SaveLights(string name)
+        {
+            var r = Native.FrameRect(Native.GetForegroundWindow());
+            Save(name, ScreenCapture.CaptureRegion(r.Left, r.Top, 420, 60));
         }
 
         private static void SaveCorner(string name)
@@ -270,6 +283,7 @@ namespace MacLook
             cleaned = true;
             try { WinKey.Uninstall(); } catch { }
             try { WindowAnimator.Uninstall(); } catch { }
+            try { if (Lights != null) Lights.Stop(); } catch { }
             try { WindowGlass.RestoreAll(); } catch { }
             try { AppBar.RemoveAll(); } catch { }
             try { Taskbar.Restore(); } catch { }

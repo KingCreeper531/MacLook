@@ -57,21 +57,49 @@ namespace MacLook
     }
 
     /// <summary>A System Settings-style window, itself made of liquid glass.</summary>
-    internal class SettingsWindow : Window
+    internal partial class SettingsWindow : Window
     {
         private static readonly string[][] Sections =
         {
             new[] { "General", "", "#8E8E93" },
-            new[] { "Dock", "", "#3478F6" },
-            new[] { "Menu Bar", "", "#5856D6" },
-            new[] { "Appearance", "", "#FF9500" },
-            new[] { "Glass", "", "#30B0C7" },
-            new[] { "Launchpad", "", "#AF52DE" },
+            new[] { "-" },
+            new[] { "Wi-Fi", "", "#0A84FF" },
+            new[] { "Bluetooth", "", "#0A84FF" },
+            new[] { "Network", "", "#0A84FF" },
+            new[] { "-" },
+            new[] { "Notifications", "", "#FF3B30" },
+            new[] { "Sound", "", "#FF2D55" },
+            new[] { "Focus", "", "#5856D6" },
+            new[] { "-" },
+            new[] { "Appearance", "", "#1C1C1E" },
+            new[] { "Accessibility", "", "#0A84FF" },
+            new[] { "Menu Bar", "", "#636366" },
+            new[] { "Desktop & Dock", "", "#1C1C1E" },
+            new[] { "Displays", "", "#0A84FF" },
+            new[] { "Wallpaper", "", "#30B0C7" },
+            new[] { "Battery & Power", "", "#34C759" },
+            new[] { "-" },
+            new[] { "Launchpad", "", "#AF52DE" },
             new[] { "Hot Corners & Keys", "", "#34C759" },
             new[] { "Icons & Windows", "", "#FF2D55" },
+            new[] { "Glass", "", "#30B0C7" },
+            new[] { "-" },
+            new[] { "Lock Screen", "", "#1C1C1E" },
+            new[] { "Privacy & Security", "", "#0A84FF" },
+            new[] { "Users", "", "#8E8E93" },
+            new[] { "-" },
+            new[] { "Keyboard", "", "#8E8E93" },
+            new[] { "Mouse", "", "#8E8E93" },
+            new[] { "Printers", "", "#8E8E93" },
+            new[] { "Storage", "", "#8E8E93" },
+            new[] { "Apps", "", "#0A84FF" },
+            new[] { "Date & Time", "", "#0A84FF" },
+            new[] { "-" },
+            new[] { "Software Update", "", "#8E8E93" },
             new[] { "About", "", "#8E8E93" },
         };
 
+        private readonly TextBox sideSearch = new TextBox { FontSize = 12.5, Padding = new Thickness(26, 4, 8, 4), BorderThickness = new Thickness(0), Margin = new Thickness(0, 0, 0, 10) };
         private readonly Border glass;
         private readonly StackPanel sidebar = new StackPanel();
         private readonly StackPanel page = new StackPanel();
@@ -81,19 +109,19 @@ namespace MacLook
 
         public SettingsWindow()
         {
-            Title = "Mac Look Settings";
+            Title = "System Settings";
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
             ResizeMode = ResizeMode.NoResize;
-            Width = 860; Height = 640;
+            Width = 900; Height = 700;
             ShowInTaskbar = true;
             UseLayoutRounding = true;
             FontFamily = new FontFamily(Theme.UiFont);
             FontSize = 13;
             SetResourceReference(ForegroundProperty, "MenuFg");
 
-            glass = new Border { CornerRadius = new CornerRadius(18) };
+            glass = new Border { CornerRadius = new CornerRadius(22) };
             glass.SetResourceReference(Border.BackgroundProperty, "MenuBg");
             var shadowed = new Grid { Margin = new Thickness(24, 16, 24, 32) };
             shadowed.Children.Add(new Border
@@ -112,8 +140,32 @@ namespace MacLook
             side.SetResourceReference(Border.BackgroundProperty, "ModuleBg");
             var sideStack = new StackPanel();
             sideStack.Children.Add(TrafficLights());
-            sideStack.Children.Add(sidebar);
-            side.Child = sideStack;
+            var searchBox = new Grid();
+            sideSearch.SetResourceReference(TextBox.BackgroundProperty, "TrackBg");
+            sideSearch.SetResourceReference(TextBox.ForegroundProperty, "MenuFg");
+            sideSearch.SetResourceReference(TextBox.CaretBrushProperty, "MenuFg");
+            sideSearch.TextChanged += (o, ev) => BuildSidebar();
+            sideSearch.KeyDown += (o, ev) =>
+            {
+                if (ev.Key != Key.Enter) return;
+                var first = Sections.FirstOrDefault(x => x.Length > 1 && x[0].IndexOf(sideSearch.Text.Trim(), StringComparison.OrdinalIgnoreCase) >= 0);
+                if (first != null) { current = first[0]; BuildSidebar(); BuildPage(); }
+            };
+            var lens = new TextBlock { Text = "", FontFamily = new FontFamily(Theme.IconFont), FontSize = 11, Opacity = 0.55, Margin = new Thickness(9, 0, 0, 10), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+            var ph = new TextBlock { Text = "Search", FontSize = 12.5, Opacity = 0.45, Margin = new Thickness(27, 0, 0, 10), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+            sideSearch.TextChanged += (o, ev) => ph.Visibility = sideSearch.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            searchBox.Children.Add(sideSearch);
+            searchBox.Children.Add(lens);
+            searchBox.Children.Add(ph);
+            sideStack.Children.Add(searchBox);
+            var sideScroll = new ScrollViewer { Content = sidebar, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Focusable = false };
+            var sideGrid = new Grid();
+            sideGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            sideGrid.RowDefinitions.Add(new RowDefinition());
+            sideGrid.Children.Add(sideStack);
+            Grid.SetRow(sideScroll, 1);
+            sideGrid.Children.Add(sideScroll);
+            side.Child = sideGrid;
             layout.Children.Add(side);
 
             // Content
@@ -164,7 +216,7 @@ namespace MacLook
             };
             var b = new Border
             {
-                Width = 13, Height = 13, CornerRadius = new CornerRadius(6.5), Margin = new Thickness(0, 0, 8, 0),
+                Width = 12, Height = 12, CornerRadius = new CornerRadius(6), Margin = new Thickness(0, 0, 8, 0),
                 Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)), Child = sym, Cursor = Cursors.Hand
             };
             b.MouseEnter += (s, e) => sym.Opacity = 1;
@@ -176,7 +228,7 @@ namespace MacLook
 
         public void Open(string section)
         {
-            current = section;
+            current = section == "Dock" ? "Desktop & Dock" : section;
             BuildSidebar();
             BuildPage();
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
@@ -223,9 +275,16 @@ namespace MacLook
         private void BuildSidebar()
         {
             sidebar.Children.Clear();
+            string filter = sideSearch.Text.Trim();
             foreach (var s in Sections)
             {
+                if (s.Length == 1)
+                {
+                    if (filter.Length == 0 && sidebar.Children.Count > 0) sidebar.Children.Add(new Border { Height = 12 });
+                    continue;
+                }
                 string name = s[0];
+                if (filter.Length > 0 && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
                 var icon = new Border
                 {
                     Width = 22, Height = 22, CornerRadius = new CornerRadius(6), Margin = new Thickness(0, 0, 9, 0),
@@ -373,14 +432,15 @@ namespace MacLook
             switch (current)
             {
                 case "General": General(); break;
-                case "Dock": DockPage(); break;
+                case "Dock": case "Desktop & Dock": DockPage(); break;
                 case "Menu Bar": MenuBarPage(); break;
                 case "Appearance": Appearance(); break;
                 case "Glass": GlassPage(); break;
                 case "Icons & Windows": IconsPage(); break;
                 case "Launchpad": LaunchpadPage(); break;
                 case "Hot Corners & Keys": HotCornersPage(); break;
-                default: About(); break;
+                case "About": About(); break;
+                default: WindowsPage(current); break;
             }
         }
 
@@ -395,7 +455,8 @@ namespace MacLook
                     if (v) Taskbar.Hide(); else Taskbar.Restore();
                 })),
                 Row("Windows key opens Launchpad", "Shortcuts like Win+E and Win+D keep working.", Toggle(Settings.WinKeyLaunchpad, v => Settings.WinKeyLaunchpad = v)),
-                Row("Open Mac Look at login", null, Toggle(login, v => { try { Startup.Enabled = v; } catch { } }))));
+                Row("Open Mac Look at login", null, Toggle(login, v => { try { Startup.Enabled = v; } catch { } })),
+                Row("Use these System Settings for Windows", "The Dock's Settings icon and the menu's System Settings open this window instead of Windows Settings.", Toggle(Settings.MacSettingsForWindows, v => Settings.MacSettingsForWindows = v))));
             page.Children.Add(Group(
                 Row("Keyboard shortcuts", "Spotlight: Alt+Space    Mission Control: Ctrl+Alt+Up    Launchpad: Windows key", null)));
             page.Children.Add(Group(
@@ -547,6 +608,13 @@ namespace MacLook
 
         private void Appearance()
         {
+            bool winDark = false;
+            try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) { object v = k == null ? null : k.GetValue("AppsUseLightTheme"); winDark = v is int && (int)v == 0; } } catch { }
+            page.Children.Add(Caption("Windows"));
+            page.Children.Add(Group(
+                Row("Apps and Windows", "Light or dark mode for every app.", Segmented(new[] { "Light", "Dark" }, new[] { "light", "dark" }, winDark ? "dark" : "light", v => ThemeSwitch.SetDark(v == "dark"))),
+                Row("Accent color and transparency in Windows", null, Link("Colors…", "ms-settings:colors"))));
+            page.Children.Add(Caption("Mac Look"));
             page.Children.Add(Group(
                 Row("Appearance", "Auto follows your Windows light/dark setting.",
                     Segmented(new[] { "Auto", "Light", "Dark" }, new[] { "auto", "light", "dark" }, Settings.ThemeMode, v => Settings.ThemeMode = v)),
@@ -613,6 +681,8 @@ namespace MacLook
             page.Children.Add(Group(
                 Row("Window frames", "Frosted title bars, rounded corners and a soft border on every app window, including File Explorer.",
                     Segmented(new[] { "Off", "Mica", "Glass" }, new[] { "off", "mica", "acrylic" }, Settings.WindowFrames, v => Settings.WindowFrames = v)),
+                Row("Window buttons", "Mac red / yellow / green buttons on the active window. Right puts them over Windows' own buttons so nothing else is covered.",
+                    Segmented(new[] { "Left", "Right", "Off" }, new[] { "left", "right", "off" }, Settings.TrafficLights, v => Settings.TrafficLights = v)),
                 Row("Animate windows", "Genie effect when a window minimizes into the Dock, and a fade when it closes.",
                     Toggle(Settings.AnimateWindows, v => Settings.AnimateWindows = v)),
                 Row("Fully see-through File Explorer", "Mac Look can't safely change what's inside other apps' windows. Windhawk's \"Translucent Windows\" mod does that; see the Windhawk app.",
@@ -683,6 +753,7 @@ namespace MacLook
                 Row("Screenshot shortcuts", "Ctrl+Shift+3: whole screen to your Desktop.  Ctrl+Shift+4: snip an area.  Ctrl+Shift+5: record the screen.",
                     Toggle(Settings.ScreenshotShortcuts, v => Settings.ScreenshotShortcuts = v)),
                 Row("Force Quit", "Ctrl+Alt+Esc opens Force Quit Applications.", Toggle(Settings.ForceQuitShortcut, v => Settings.ForceQuitShortcut = v)),
+                Row("Window switcher (Alt+Tab)", "Every open window as a live glass card. Hold Alt, press Tab to move, let go to switch.", Toggle(Settings.SwitcherAltTab, v => Settings.SwitcherAltTab = v)),
                 Row("Other shortcuts", "Spotlight: Alt+Space    Mission Control: Ctrl+Alt+Up    Launchpad: Windows key", null)));
         }
         private void About()

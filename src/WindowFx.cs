@@ -199,6 +199,76 @@ namespace MacLook
             new GenieOverlay(img, from, from, true).Run();
         }
 
+        /// <summary>Window switcher: the chosen window grows from its card to its real size.</summary>
+        public static void Zoom(IntPtr hwnd, Rect from)
+        {
+            try
+            {
+                Rect to;
+                var img = Capture(hwnd, out to);
+                if (img == null) return;
+                new ZoomOverlay(img, from, to).Run();
+            }
+            catch (Exception ex) { Program.Log(ex); }
+        }
+
+        private class ZoomOverlay : Window
+        {
+            private readonly Rect from, to, area;
+            private readonly Image image;
+            private DateTime start;
+            private double scale = 1;
+
+            public ZoomOverlay(BitmapSource img, Rect from, Rect to)
+            {
+                this.from = from; this.to = to;
+                var u = Rect.Union(from, to);
+                u.Inflate(4, 4);
+                area = u;
+                WindowStyle = WindowStyle.None; AllowsTransparency = true; Background = Brushes.Transparent;
+                ShowInTaskbar = false; ShowActivated = false; Topmost = true; ResizeMode = ResizeMode.NoResize;
+                image = new Image { Source = img, Stretch = Stretch.Fill };
+                var canvas = new Canvas();
+                canvas.Children.Add(image);
+                Content = canvas;
+                SourceInitialized += (s, e) =>
+                {
+                    var h = new WindowInteropHelper(this).Handle;
+                    scale = HwndSource.FromHwnd(h).CompositionTarget.TransformToDevice.M11;
+                    long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+                    Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex | 0x20 | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
+                    Left = area.X / scale; Top = area.Y / scale; Width = area.Width / scale; Height = area.Height / scale;
+                };
+            }
+
+            public void Run()
+            {
+                Show();
+                start = DateTime.Now;
+                Frame(0);
+                CompositionTarget.Rendering += OnFrame;
+            }
+
+            private void OnFrame(object sender, EventArgs e)
+            {
+                double p = (DateTime.Now - start).TotalMilliseconds / 260.0;
+                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; Close(); return; }
+                Frame(p);
+            }
+
+            private void Frame(double p)
+            {
+                double k = 1 - Math.Pow(1 - p, 3);
+                double x = from.X + (to.X - from.X) * k, y = from.Y + (to.Y - from.Y) * k;
+                double w = from.Width + (to.Width - from.Width) * k, h = from.Height + (to.Height - from.Height) * k;
+                Canvas.SetLeft(image, (x - area.X) / scale);
+                Canvas.SetTop(image, (y - area.Y) / scale);
+                image.Width = Math.Max(1, w / scale);
+                image.Height = Math.Max(1, h / scale);
+                image.Opacity = p > 0.8 ? (1 - p) / 0.2 : 1;
+            }
+        }
+
         private class GenieOverlay : Window
         {
             private const int Strips = 48;

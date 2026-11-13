@@ -132,6 +132,9 @@ namespace MacLook
                 bool isWin = k.vkCode == 0x5B || k.vkCode == 0x5C;
                 if (!injected)
                 {
+                    IntPtr sw = SwitcherKey(k.vkCode, down, up);
+                    if (sw != IntPtr.Zero) return sw;
+
                     if (isWin && down) { if (!winDown) { winDown = true; comboUsed = false; } Taskbar.Enforce(); }
                     else if (!isWin && down && winDown) comboUsed = true;
                     else if (isWin && up && winDown)
@@ -152,6 +155,56 @@ namespace MacLook
                 }
             }
             return CallNextHookEx(hook, nCode, wParam, lParam);
+        }
+
+        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vk);
+        private static bool altDown, switching, switchCancelled;
+
+        private static void Ui(Action a) { Application.Current.Dispatcher.BeginInvoke(a); }
+
+        /// <summary>
+        /// Alt+Tab opens Mac Look's window switcher instead of Windows' own (when enabled).
+        /// Returns non-zero to swallow the key. The work runs on the UI queue so the hook returns instantly.
+        /// </summary>
+        private static IntPtr SwitcherKey(uint vk, bool down, bool up)
+        {
+            bool isAlt = vk == 0x12 || vk == 0xA4 || vk == 0xA5;
+            if (isAlt && down) { altDown = true; return IntPtr.Zero; }
+            if (isAlt && up)
+            {
+                altDown = false;
+                if (!switching) return IntPtr.Zero;
+                switching = false;
+                if (!switchCancelled) Ui(() => Program.Switcher.Commit());
+                // Same "mask key" trick as the Windows key: stops the Alt release from opening the app's menu.
+                Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero);
+                Native.keybd_event(0xE8, 0, Native.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                Native.keybd_event((byte)vk, 0, Native.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                return new IntPtr(1);
+            }
+            if (!Settings.SwitcherAltTab || Program.IsFullscreen) return IntPtr.Zero;
+
+            if (vk == 0x09 && altDown)   // Tab
+            {
+                if (down)
+                {
+                    bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0;
+                    if (!switching) { switching = true; switchCancelled = false; Ui(() => Program.Switcher.Open(shift)); }
+                    else if (!switchCancelled) { if (shift) Ui(() => Program.Switcher.Prev()); else Ui(() => Program.Switcher.Next()); }
+                }
+                return new IntPtr(1);
+            }
+            if (switching && !switchCancelled && down)
+            {
+                switch (vk)
+                {
+                    case 0x25: case 0x26: Ui(() => Program.Switcher.Prev()); return new IntPtr(1);   // Left / Up
+                    case 0x27: case 0x28: Ui(() => Program.Switcher.Next()); return new IntPtr(1);   // Right / Down
+                    case 0x1B: switchCancelled = true; Ui(() => Program.Switcher.Cancel()); return new IntPtr(1);   // Esc
+                    case 0x0D: switchCancelled = true; Ui(() => Program.Switcher.Commit()); return new IntPtr(1);   // Enter
+                }
+            }
+            return IntPtr.Zero;
         }
     }
 }

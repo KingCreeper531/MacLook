@@ -18,8 +18,8 @@ using Path = System.IO.Path;
 [assembly: AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: AssemblyProduct("Mac Look")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: AssemblyVersion("2.3.0.0")]
-[assembly: AssemblyFileVersion("2.3.0.0")]
+[assembly: AssemblyVersion("2.4.0.0")]
+[assembly: AssemblyFileVersion("2.4.0.0")]
 
 namespace MacLookSetup
 {
@@ -55,7 +55,7 @@ namespace MacLookSetup
             get
             {
                 try { var v = FileVersionInfo.GetVersionInfo(SourceExe); return v.FileMajorPart + "." + v.FileMinorPart + "." + v.FileBuildPart; }
-                catch { return "2.3.0"; }
+                catch { return "2.4.0"; }
             }
         }
 
