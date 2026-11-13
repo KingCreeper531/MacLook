@@ -21,7 +21,7 @@ namespace MacLook
     {
         private const uint EVENT_SYSTEM_FOREGROUND = 3, EVENT_SYSTEM_MOVESIZESTART = 0x0A, EVENT_SYSTEM_MOVESIZEEND = 0x0B, EVENT_SYSTEM_MINIMIZESTART = 0x16, EVENT_SYSTEM_MINIMIZEEND = 0x17;
         private const int TrackAfterMoveMs = 300;   // keep following a little after a window stops (snap / maximize settle)
-        private const uint EVENT_OBJECT_DESTROY = 0x8001, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_HIDE = 0x8003, EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+        private const uint EVENT_OBJECT_DESTROY = 0x8001, EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_HIDE = 0x8003, EVENT_OBJECT_LOCATIONCHANGE = 0x800B, EVENT_OBJECT_NAMECHANGE = 0x800C;
         private const uint WINEVENT_SKIPOWNPROCESS = 2;
         private const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
         private const int GWL_STYLE = -16;
@@ -79,11 +79,11 @@ namespace MacLook
             showHook = Native.SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS);
             // Moves of ANY window, whoever moves it (the app itself, snapping tools, FancyZones...).
             // Filtered to windows with Mac buttons right at the top of OnEvent, so it stays cheap.
-            moveHook = Native.SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS);
-            timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SyncEveryMs) };
+            moveHook = Native.SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, proc, 0, 0, WINEVENT_SKIPOWNPROCESS);
+            timer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(SyncEveryMs) };
             timer.Tick += (s, e) => Sync();
             timer.Start();
-            soon = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SyncSoonMs) };
+            soon = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(SyncSoonMs) };
             soon.Tick += (s, e) => { soon.Stop(); Sync(); };
             SetActive(Native.GetForegroundWindow());
             Sync();
@@ -111,10 +111,20 @@ namespace MacLook
 
         private static void SyncSoon() { if (soon != null) { soon.Stop(); soon.Start(); } }
 
+        /// <summary>A window just became visible again (e.g. after its opening animation): place its buttons now.</summary>
+        public static void Poke(IntPtr h)
+        {
+            if (!running) return;
+            ButtonsOverlay o;
+            if (overlays.TryGetValue(h, out o)) o.Position();
+            SyncSoon();
+        }
+
         private static void OnEvent(IntPtr hook, uint ev, IntPtr h, int idObject, int idChild, uint thread, uint time)
         {
             if (!running || idObject != 0 || h == IntPtr.Zero) return;
             if (ev == EVENT_OBJECT_LOCATIONCHANGE && !overlays.ContainsKey(h)) return;   // most move events: not ours
+            if (ev == EVENT_OBJECT_NAMECHANGE && overlays.ContainsKey(h)) return;      // already covered
             // Called from inside the message loop: nothing may escape from here.
             try
             {
@@ -123,7 +133,12 @@ namespace MacLook
                 {
                     case EVENT_SYSTEM_FOREGROUND:
                         SetActive(h);
+                        if (overlays.TryGetValue(h, out o)) o.Follow();   // be there the moment it comes forward
                         SyncSoon();
+                        break;
+                    case EVENT_OBJECT_NAMECHANGE:
+                        // Some windows only get their title a moment after opening: cover them as soon as they do.
+                        if ((Native.GetWindowLongPtr(h, GWL_STYLE).ToInt64() & WS_CHILD) == 0) SyncSoon();
                         break;
                     case EVENT_SYSTEM_MINIMIZESTART:
                         if (overlays.TryGetValue(h, out o)) o.HideOverlay();
@@ -134,7 +149,8 @@ namespace MacLook
                         SyncSoon();   // a new window: cover its buttons right away
                         break;
                     case EVENT_SYSTEM_MINIMIZEEND:
-                        SyncSoon();   // a restored window: cover its buttons right away
+                        if (overlays.TryGetValue(h, out o)) o.Position();   // restored: buttons back immediately
+                        SyncSoon();
                         break;
                     case EVENT_OBJECT_HIDE:
                     case EVENT_OBJECT_DESTROY:
@@ -165,9 +181,16 @@ namespace MacLook
         private static void Sync()
         {
             if (!running) return;
-            if (Settings.WindowButtons == "off" || Program.IsFullscreen)
+            if (Settings.WindowButtons == "off")
             {
                 foreach (var h in overlays.Keys.ToList()) Remove(h);
+                return;
+            }
+            if (Program.IsFullscreen)
+            {
+                // Just hide them during a game / fullscreen video. Removing them meant rebuilding every one
+                // afterwards, and Windows' own buttons showed meanwhile.
+                foreach (var o2 in overlays.Values) o2.HideOverlay();
                 return;
             }
             List<AppWindow> wins;
@@ -355,15 +378,16 @@ namespace MacLook
             {
                 e.Handled = true;
                 int sc = index == 0 ? SC_CLOSE : index == 1 ? SC_MINIMIZE : (Native.IsZoomed(target) ? SC_RESTORE : SC_MAXIMIZE);
+                if (sc == SC_CLOSE || sc == SC_MINIMIZE) WindowAnimator.SnapshotNow(target);   // the animation shows it as it is right now
                 Native.PostMessage(target, WM_SYSCOMMAND, new IntPtr(sc), IntPtr.Zero);
             };
             return g;
         }
 
-        /// <summary>Colored on the active window (or while hovered), gray otherwise, like macOS.</summary>
+        /// <summary>Colored, or (with "Gray buttons on background windows", like macOS) only on the active or hovered window.</summary>
         private void Paint()
         {
-            bool color = isActive || hover;
+            bool color = isActive || hover || !Settings.GrayInactiveButtons;
             for (int i = 0; i < 3; i++)
             {
                 dots[i].Fill = new SolidColorBrush(color ? MacButtons.Fill[i] : (Theme.Dark ? Color.FromRgb(0x4A, 0x4A, 0x4D) : Color.FromRgb(0xCF, 0xCF, 0xD2)));
@@ -388,6 +412,7 @@ namespace MacLook
         public void Position()
         {
             if (closed) return;   // e.g. a delayed re-sample arriving after Remove()
+            if (WindowAnimator.IsOpening(target)) { HideOverlay(); return; }   // window still invisible: no floating buttons
             if (!Native.IsWindow(target) || Native.IsIconic(target) || !Native.IsWindowVisible(target)) { HideOverlay(); return; }
             var r = Native.FrameRect(target);
             if (r.Right - r.Left < 200 || r.Bottom - r.Top < 80) { HideOverlay(); return; }
@@ -467,6 +492,7 @@ namespace MacLook
         public void Follow()
         {
             if (closed) return;
+            if (WindowAnimator.IsOpening(target)) { HideOverlay(); return; }
             if (!Native.IsWindow(target) || Native.IsIconic(target) || !Native.IsWindowVisible(target)) { HideOverlay(); return; }
             var r = Native.FrameRect(target);
             if (r.Right - r.Left < 200 || r.Bottom - r.Top < 80) { HideOverlay(); return; }

@@ -562,7 +562,7 @@ namespace MacLook
         {
             UpdateClock();
             if (DateTime.Now.Second % 10 == 0) UpdateNetwork();
-            if (DateTime.Now.Second % 2 == 0) WindowAnimator.RefreshForeground();
+            WindowAnimator.RefreshForeground();
             Program.Dock.Refresh();
         }
 

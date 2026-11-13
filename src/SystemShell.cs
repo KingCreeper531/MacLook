@@ -348,7 +348,9 @@ namespace MacLook
 
         public static void Later(int ms, Action a)
         {
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+            // Normal priority: the default (Background) waits behind every animation frame, and while
+            // something animates at 180 fps a "50 ms" timer could fire a second late.
+            var t = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(ms) };
             t.Tick += (s, e) => { t.Stop(); a(); };
             t.Start();
         }

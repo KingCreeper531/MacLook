@@ -705,8 +705,10 @@ namespace MacLook
             page.Children.Add(Group(
                 Row("Window frames", "Frosted title bars, rounded corners and a soft border on every app window, including File Explorer.",
                     Segmented(new[] { "Off", "Mica", "Glass" }, new[] { "off", "mica", "acrylic" }, Settings.WindowFrames, v => Settings.WindowFrames = v)),
-                Row("Window buttons", "Mac red / yellow / green buttons on the active window. Replace hides Windows' own minimize / maximize / close and puts the Mac buttons in their place, so nothing else is covered.",
+                Row("Window buttons", "Mac red / yellow / green buttons on every app window. Replace hides Windows' own minimize / maximize / close and puts the Mac buttons in their place, so nothing else is covered.",
                     Segmented(new[] { "Replace", "Left", "Off" }, new[] { "replace", "left", "off" }, Settings.WindowButtons, v => Settings.WindowButtons = v)),
+                Row("Gray buttons on background windows", "Like macOS: only the window you're using keeps colored buttons. Off keeps them colored on every window.",
+                    Toggle(Settings.GrayInactiveButtons, v => { Settings.GrayInactiveButtons = v; WindowButtons.Refresh(); })),
                 Row("Animate windows", "Genie effect when a window minimizes into the Dock, and a fade when it closes.",
                     Toggle(Settings.AnimateWindows, v => Settings.AnimateWindows = v)),
                 Row("Fully see-through File Explorer", "Mac Look can't safely change what's inside other apps' windows. Windhawk's \"Translucent Windows\" mod does that; see the Windhawk app.",

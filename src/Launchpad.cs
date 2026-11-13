@@ -585,7 +585,18 @@ namespace MacLook
             st.Drop += (s, e) => { e.Handled = true; DropOn(e, a, (bool)st.Tag); };
 
             // Icons load a few at a time so the grid appears instantly.
-            Dispatcher.BeginInvoke(new Action(() => { img.Source = IconStyler.Get(a.Key, 128); }), DispatcherPriority.Background);
+            // Windows sometimes isn't ready to hand over an icon yet: try again a little later, and if it
+            // never comes, show a lettered tile instead of an empty gap.
+            int tries = 0;
+            Action load = null;
+            load = () =>
+            {
+                var icon = IconStyler.Get(a.Key, 128);
+                if (icon != null) { img.Source = icon; return; }
+                if (++tries < 3) { Launcher.Later(tries * 1500, load); return; }
+                img.Source = IconStyler.Placeholder(AppCatalog.DisplayName(a));
+            };
+            Dispatcher.BeginInvoke(new Action(() => { try { load(); } catch (Exception ex) { Program.Log(ex); } }), DispatcherPriority.Background);
             tiles[cacheKey] = st;
             return st;
         }

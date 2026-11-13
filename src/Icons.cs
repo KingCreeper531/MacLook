@@ -38,6 +38,8 @@ namespace MacLook
         private const uint DIB_RGB_COLORS = 0;
 
         private static readonly Dictionary<string, BitmapSource> cache = new Dictionary<string, BitmapSource>();
+        private static readonly Dictionary<string, DateTime> failedAt = new Dictionary<string, DateTime>();
+        private const double RetryAfterSec = 1;
 
         public static bool Exists(string path)
         {
@@ -56,9 +58,13 @@ namespace MacLook
             string key = path.ToLowerInvariant() + "|" + size;
             BitmapSource bs;
             if (!refresh && cache.TryGetValue(key, out bs)) return bs;
+            DateTime failed;
+            if (!refresh && failedAt.TryGetValue(key, out failed) && (DateTime.Now - failed).TotalSeconds < RetryAfterSec) return null;
             bs = Load(path, size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK);
             if (bs == null) bs = Load(path, size, SIIGBF_RESIZETOFIT);   // thumbnail, for items without an icon
-            cache[key] = bs;
+            // A failure is only remembered briefly: the shell is often still extracting the icon.
+            if (bs != null) { cache[key] = bs; failedAt.Remove(key); }
+            else failedAt[key] = DateTime.Now;
             return bs;
         }
 

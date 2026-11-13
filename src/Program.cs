@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.5.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.5.1.0")]
+[assembly: System.Reflection.AssemblyVersion("2.5.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.5.2.0")]
 
 namespace MacLook
 {
@@ -268,6 +268,14 @@ namespace MacLook
                     var kept = all.Where(AppCatalog.IsRealApp).ToList();
                     Log("LAUNCHPAD kept " + kept.Count + " of " + all.Count);
                     Log("LAUNCHPAD hidden: " + string.Join(" | ", all.Where(a => !AppCatalog.IsRealApp(a)).Select(a => a.Name).ToArray()));
+                    var bad = new System.Collections.Generic.List<string>();
+                    foreach (var a in kept)
+                    {
+                        string why = IconStyler.Problem(IconLoader.Get(a.Key, 128));
+                        if (why == null) why = IconStyler.Problem(IconStyler.Get(a.Key, 128));
+                        if (why != null) bad.Add(a.Name + " (" + why + ", " + a.Key + ")");                    }
+                    // "flat" is only a problem without a plate: the glass style puts plain white logos on graphite.
+                    Log("LAUNCHPAD icons missing or blank: " + bad.Count + (bad.Count > 0 ? ": " + string.Join(" | ", bad.ToArray()) : ""));
                 },
                 Quit
             };

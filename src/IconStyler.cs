@@ -135,8 +135,51 @@ namespace MacLook
                 var raw = builtin ? BuiltinIcons.Get(key) : IconLoader.Get(key, rawSize);
                 result = raw == null ? null : (Settings.IconStyle == "glass" && !builtin ? Plate(raw) : raw);
             }
-            cache[ck] = result;
+            if (result != null) cache[ck] = result;   // a failure is often temporary (Windows still extracting it): try again next time
             return result;
+        }
+
+        /// <summary>A graphite squircle with the app's first letter, for apps Windows has no icon for.</summary>
+        public static BitmapSource Placeholder(string name)
+        {
+            string letter = string.IsNullOrEmpty(name) ? "?" : name.Trim().Substring(0, 1).ToUpperInvariant();
+            double plate = S * 0.805, ox = (S - plate) / 2, oy = (S - plate) / 2 - S * 0.012;
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                var fill = new LinearGradientBrush(Color.FromRgb(0x8E, 0x8E, 0x93), Color.FromRgb(0x48, 0x48, 0x4A), 90);
+                dc.DrawGeometry(fill, null, Squircle(ox, oy, plate));
+                var text = new FormattedText(letter, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                    new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal), plate * 0.5, Brushes.White);
+                dc.DrawText(text, new Point(S / 2.0 - text.Width / 2, oy + plate / 2 - text.Height / 2));
+            }
+            var rtb = new RenderTargetBitmap(S, S, 96, 96, PixelFormats.Pbgra32);
+            rtb.Render(dv);
+            rtb.Freeze();
+            return rtb;
+        }
+
+        /// <summary>Why an icon would show up empty (null when it's fine): missing, see-through, or one flat colour.</summary>
+        public static string Problem(BitmapSource img)
+        {
+            if (img == null) return "none";
+            var src = img.Format == PixelFormats.Pbgra32 ? img : new FormatConvertedBitmap(img, PixelFormats.Pbgra32, null, 0);
+            int w = src.PixelWidth, h = src.PixelHeight;
+            if (w < 4 || h < 4) return "tiny";
+            var px = new int[w * h];
+            src.CopyPixels(px, w * 4, 0);
+            int visible = 0, min = 255, max = 0;
+            foreach (int c in px)
+            {
+                if (((c >> 24) & 0xFF) < 24) continue;
+                visible++;
+                int l = (((c >> 16) & 0xFF) * 3 + ((c >> 8) & 0xFF) * 6 + (c & 0xFF)) / 10;
+                if (l < min) min = l;
+                if (l > max) max = l;
+            }
+            if (visible < px.Length / 50) return "see-through";
+            if (max - min < 6) return "flat";
+            return null;
         }
 
         private static BitmapSource LoadImage(string path)
@@ -190,6 +233,20 @@ namespace MacLook
                 bool fullBleed = bw >= w * 0.86 && bh >= h * 0.86 && coverage > 0.82;
                 var dom = Color.FromRgb((byte)Math.Min(255, sr / sw), (byte)Math.Min(255, sg / sw), (byte)Math.Min(255, sb / sw));
 
+                // Many Store apps ship a plain white logo meant for a coloured tile: on a pale plate it vanishes.
+                // Measure how light and how colourful the artwork itself is.
+                double lum = 0, chroma = 0, n = 0;
+                for (int i = 0; i < px.Length; i++)
+                {
+                    int c = px[i], a = (c >> 24) & 0xFF;
+                    if (a < 120) continue;
+                    double r = ((c >> 16) & 0xFF) * 255.0 / a, g = ((c >> 8) & 0xFF) * 255.0 / a, b = (c & 0xFF) * 255.0 / a;
+                    lum += 0.3 * r + 0.6 * g + 0.1 * b;
+                    chroma += Math.Max(r, Math.Max(g, b)) - Math.Min(r, Math.Min(g, b));
+                    n++;
+                }
+                bool lightArt = n > 0 && lum / n > 185 && chroma / n < 40;
+
                 // macOS icon grid: the squircle fills ~80% of the canvas, sitting slightly high.
                 double plate = S * 0.805, ox = (S - plate) / 2, oy = (S - plate) / 2 - S * 0.012;
                 var squircle = Squircle(ox, oy, plate);
@@ -210,8 +267,18 @@ namespace MacLook
                     }
                     else
                     {
-                        var top = Mix(dom, Colors.White, 0.86);
-                        var bottom = Mix(dom, Colors.White, 0.66);
+                        // Light artwork gets a graphite plate (like macOS's dark icons), everything else a pale tint.
+                        Color top, bottom;
+                        if (lightArt)
+                        {
+                            top = Color.FromRgb(0x5A, 0x5A, 0x5E);
+                            bottom = Color.FromRgb(0x2C, 0x2C, 0x2E);
+                        }
+                        else
+                        {
+                            top = Mix(dom, Colors.White, 0.86);
+                            bottom = Mix(dom, Colors.White, 0.66);
+                        }
                         dc.DrawRectangle(new LinearGradientBrush(top, bottom, 90), null, new Rect(ox, oy, plate, plate));
 
                         // Fit the original artwork at ~62% of the plate, with its own soft shadow.

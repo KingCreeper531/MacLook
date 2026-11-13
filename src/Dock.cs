@@ -168,7 +168,7 @@ namespace MacLook
             Native.SetWindowLongPtr(hwnd, Native.GWL_EXSTYLE, new IntPtr(ex | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW));
             Reposition();
 
-            edgeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(EdgePollMs) };
+            edgeTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(EdgePollMs) };
             edgeTimer.Tick += (s, a) => EdgeTick();
             edgeTimer.Start();
             if (Settings.DockAutoHide) { shown = false; slide.Y = HiddenOffset; }

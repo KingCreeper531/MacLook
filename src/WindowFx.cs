@@ -64,7 +64,7 @@ namespace MacLook
         private const uint PW_RENDERFULLCONTENT = 2;
         private const int DWMWA_CAPTION_BUTTON_BOUNDS = 5, GWL_STYLE = -16;
         private const long WS_CHILD = 0x40000000, WS_EX_TRANSPARENT = 0x20;
-        private const int LaunchWatchMs = 8000, CloseSnapshotMaxAgeSec = 60;
+        private const int LaunchWatchMs = 8000, CloseSnapshotMaxAgeSec = 4;   // older pictures would show stale content
 
         private static Native.WinEventDelegate proc;
         private static readonly List<IntPtr> hooks = new List<IntPtr>();
@@ -167,18 +167,52 @@ namespace MacLook
             catch (Exception ex) { Program.Log(ex); }
         }
 
-        /// <summary>Keep a fresh picture of the active window, so closing it can be animated after it's gone.</summary>
-        public static void Snapshot(IntPtr h)
+        /// <summary>
+        /// A fresh picture right before a Mac button closes or minimizes a window (it may not be the active one),
+        /// so the animation never replays an old picture.
+        /// </summary>
+        public static void SnapshotNow(IntPtr h)
         {
             try
             {
-                if (!Settings.AnimateWindows || h != Native.GetForegroundWindow() || !IsAppWindow(h) || Native.IsIconic(h)) return;
+                if (!Settings.AnimateWindows || !IsAppWindow(h) || Native.IsIconic(h)) return;
                 Rect r;
                 var img = Capture(h, out r);
                 if (img == null) return;
                 snapHwnd = h; snap = img; snapRect = r; snapTime = DateTime.Now;
             }
             catch (Exception ex) { Program.Log(ex); }
+        }
+
+        private static bool snapBusy;
+
+        /// <summary>
+        /// Keep a fresh picture of the active window, so closing it can be animated after it's gone.
+        /// Taken on a worker thread: a busy app can take 100+ ms to answer, which would stutter every animation.
+        /// </summary>
+        public static void Snapshot(IntPtr h)
+        {
+            try
+            {
+                if (snapBusy || !Settings.AnimateWindows || h != Native.GetForegroundWindow() || !IsAppWindow(h) || Native.IsIconic(h) || opening.ContainsKey(h)) return;
+                snapBusy = true;
+                var ui = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                var asked = DateTime.Now;
+                System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    Rect r = Rect.Empty;
+                    BitmapSource img = null;
+                    try { img = Capture(h, out r); } catch (Exception ex) { Program.Log(ex); }
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        snapBusy = false;
+                        // A picture taken right before a close/minimize click (SnapshotNow) is newer: keep that one.
+                        if (img == null || (snapHwnd == h && snapTime > asked)) return;
+                        snapHwnd = h; snap = img; snapRect = r; snapTime = asked;
+                    }));
+                });
+            }
+            catch (Exception ex) { snapBusy = false; Program.Log(ex); }
         }
 
         public static void RefreshForeground() { Snapshot(Native.GetForegroundWindow()); }
@@ -499,7 +533,7 @@ namespace MacLook
         private const long WS_EX_LAYERED = 0x80000;
         private const uint LWA_ALPHA = 2;
         private const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
-        private const int OpenCaptureDelayMs = 70, OpenMaxHiddenMs = 900;
+        private const int OpenCaptureDelayMs = 30, OpenMaxHiddenMs = 1600;
 
         private static IntPtr anyShowHook;
         private static Native.WinEventDelegate anyShowProc;
@@ -530,6 +564,9 @@ namespace MacLook
             {
                 if (!Settings.AnimateWindows || idObject != 0 || hwnd == IntPtr.Zero) return;
                 if (launchBg != null) return;   // an app launched from the Dock / Launchpad: that animation handles it
+                // Heard about it late (Mac Look was busy): the window is already on screen, and hiding it now
+                // would make it blink out and back. Leave it.
+                if (unchecked((uint)Environment.TickCount - time) > OpenLateMs) return;
                 if ((Native.GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64() & WS_CHILD) != 0) return;
                 if (opening.ContainsKey(hwnd) || !IsAppWindow(hwnd) || Native.IsIconic(hwnd)) return;
                 if (seen.Count > 2000) seen.RemoveWhere(x => !Native.IsWindow(x));
@@ -552,23 +589,97 @@ namespace MacLook
 
                 IntPtr h = hwnd;
                 Launcher.Later(OpenMaxHiddenMs, () => Reveal(h));   // safety net: never stays hidden
-                Launcher.Later(OpenCaptureDelayMs, () =>
-                {
-                    try
-                    {
-                        if (!opening.ContainsKey(h)) return;
-                        Rect actual;
-                        var img = Capture(h, out actual);
-                        if (img == null) { Reveal(h); return; }
-                        var from = new Rect(actual.X + actual.Width * 0.05, actual.Y + actual.Height * 0.05, actual.Width * 0.9, actual.Height * 0.9);
-                        var o = new PopOverlay(img, from, actual, () => Reveal(h));
-                        o.Run();
-                    }
-                    catch (Exception e2) { Program.Log(e2); Reveal(h); }
-                });
+                var ui = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                System.Threading.ThreadPool.QueueUserWorkItem(_ => WaitForContent(h, ui));
             }
             catch (Exception e) { Program.Log(e); }
         }
+
+        private const int OpenPollMs = 45, OpenMaxWaitMs = 650, OpenLateMs = 60;
+
+        /// <summary>
+        /// Apps show their window before they've finished drawing it (Explorer takes over half a second).
+        /// On a worker thread, so nothing else stutters: keep taking pictures until two in a row match and
+        /// aren't empty, then zoom that finished picture in. A window still changing after 0.8 s zooms in
+        /// with its latest picture; one that never draws anything is just revealed.
+        /// </summary>
+        private static void WaitForContent(IntPtr h, System.Windows.Threading.Dispatcher ui)
+        {
+            BitmapSource img = null;
+            Rect actual = Rect.Empty;
+            try
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                int[] last = null;
+                System.Threading.Thread.Sleep(OpenCaptureDelayMs);
+                while (true)
+                {
+                    Rect r;
+                    var pic = Capture(h, out r);
+                    int[] sig = pic == null ? null : Signature(pic);
+                    if (sig != null && !Flat(sig))
+                    {
+                        img = pic; actual = r;
+                        if (last != null && Same(sig, last)) break;
+                        last = sig;
+                    }
+                    if (clock.ElapsedMilliseconds >= OpenMaxWaitMs || !Native.IsWindow(h)) break;
+                    System.Threading.Thread.Sleep(OpenPollMs);
+                }
+            }
+            catch (Exception e) { Program.Log(e); img = null; }
+
+            var shot = img; var at = actual;
+            ui.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    if (!opening.ContainsKey(h)) return;   // the safety net already showed it
+                    if (shot == null) { Reveal(h); return; }
+                    var from = new Rect(at.X + at.Width * 0.05, at.Y + at.Height * 0.05, at.Width * 0.9, at.Height * 0.9);
+                    new PopOverlay(shot, from, at, () => Reveal(h)).Run();
+                }
+                catch (Exception e2) { Program.Log(e2); Reveal(h); }
+            }));
+        }
+
+        /// <summary>Brightness on a 16x12 grid across the window (skipping the title bar, which apps draw first).</summary>
+        private static int[] Signature(BitmapSource img)
+        {
+            int w = img.PixelWidth, h = img.PixelHeight;
+            if (w < 16 || h < 16) return null;
+            var sig = new int[16 * 12];
+            var row = new int[w];
+            for (int gy = 0; gy < 12; gy++)
+            {
+                int y = Math.Min(h - 1, (int)(h * (0.15 + 0.8 * gy / 11.0)));
+                img.CopyPixels(new Int32Rect(0, y, w, 1), row, w * 4, 0);
+                for (int gx = 0; gx < 16; gx++)
+                {
+                    int c = row[(int)((w - 1) * gx / 15.0)];
+                    sig[gy * 16 + gx] = (((c >> 16) & 0xFF) * 3 + ((c >> 8) & 0xFF) * 6 + (c & 0xFF)) / 10;
+                }
+            }
+            return sig;
+        }
+
+        /// <summary>(Nearly) one flat colour: the app hasn't drawn its window yet.</summary>
+        private static bool Flat(int[] sig)
+        {
+            int min = 255, max = 0;
+            foreach (int l in sig) { if (l < min) min = l; if (l > max) max = l; }
+            return max - min < 10;
+        }
+
+        /// <summary>Two pictures match: the window has finished drawing (a blinking caret is allowed).</summary>
+        private static bool Same(int[] a, int[] b)
+        {
+            int changed = 0;
+            for (int i = 0; i < a.Length; i++) if (Math.Abs(a[i] - b[i]) > 6) changed++;
+            return changed <= 2;
+        }
+
+        public static bool IsOpening(IntPtr h) { return opening.ContainsKey(h); }
 
         /// <summary>Make a window visible again exactly as it was (idempotent).</summary>
         private static void Reveal(IntPtr h)
@@ -587,6 +698,7 @@ namespace MacLook
                     int off = 0;
                     Native.DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, ref off, 4);
                 }
+                WindowButtons.Poke(h);   // its Mac buttons were held back while it was hidden: show them now
             }
             catch (Exception e) { Program.Log(e); }
         }
@@ -609,8 +721,14 @@ namespace MacLook
                 Content = canvas;
             }
 
+            private int framesAfterReveal = -1;
+
             protected override bool Frame(double ms)
             {
+                // Once the real window is showing underneath, keep the finished picture for two more frames
+                // (so the window has been composed), then go. Counted in frames, not with a timer, so a busy
+                // moment can't leave a frozen picture sitting over the live window.
+                if (framesAfterReveal >= 0) return ++framesAfterReveal < 3;
                 double p = Math.Min(1, ms / Duration);
                 const double s = 1.2;
                 double t = p - 1, k = t * t * ((s + 1) * t + s) + 1;   // back-ease out
@@ -621,7 +739,12 @@ namespace MacLook
                 image.Width = Math.Max(1, w / scale);
                 image.Height = Math.Max(1, h / scale);
                 image.Opacity = Math.Min(1, p * 2.2);
-                return p < 1;
+                if (p < 1) return true;
+                // Show the real window under the finished picture.
+                finishing = true;
+                if (done != null) done();
+                framesAfterReveal = 0;
+                return true;
             }
 
             protected override void OnClosed(EventArgs e)
@@ -629,15 +752,6 @@ namespace MacLook
                 // However it ends, the real window comes back.
                 if (!finishing && done != null) done();
                 base.OnClosed(e);
-            }
-
-            /// <summary>Show the real window under the finished picture, then remove the picture a frame later.</summary>
-            protected override void Finished()
-            {
-                if (finishing) return;
-                finishing = true;
-                if (done != null) done();
-                Launcher.Later(32, () => { try { Close(); } catch { } });
             }
         }
 

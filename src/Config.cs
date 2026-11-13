@@ -243,6 +243,7 @@ namespace MacLook
         public static bool ForceQuitShortcut = true;
         public static bool SwitcherAltTab = true;
         public static string WindowButtons = "replace";   // replace (cover Windows' buttons) | left | off
+        public static bool GrayInactiveButtons = false;   // macOS greys the buttons of windows in the background
         public static bool MacSettingsForWindows = true;   // the Dock's Settings icon opens Mac Look's System Settings
         // Internal
         public static string OriginalWallpaper = "";
