@@ -349,7 +349,7 @@ namespace MacLook
                 if (img == null) { Finish(); return; }
                 win.Source = img;
                 start = DateTime.Now;
-                CompositionTarget.Rendering += OnFrame;
+                CompositionTarget.Rendering += OnFrame; MacLook.Smooth.Begin();
             }
 
             private void OnFrame(object sender, EventArgs e)
@@ -362,7 +362,7 @@ namespace MacLook
                 Canvas.SetLeft(win, (x - area.X) / scale); Canvas.SetTop(win, (y - area.Y) / scale);
                 win.Width = Math.Max(1, w / scale); win.Height = Math.Max(1, h / scale);
                 win.Opacity = Math.Min(1, p * 3);
-                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; Finish(); }
+                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; MacLook.Smooth.End(); Finish(); }
             }
 
             private void Finish()
@@ -420,13 +420,13 @@ namespace MacLook
                 Show();
                 start = DateTime.Now;
                 Frame(0);
-                CompositionTarget.Rendering += OnFrame;
+                CompositionTarget.Rendering += OnFrame; MacLook.Smooth.Begin();
             }
 
             private void OnFrame(object sender, EventArgs e)
             {
                 double p = (DateTime.Now - start).TotalMilliseconds / 260.0;
-                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; Close(); return; }
+                if (p >= 1) { CompositionTarget.Rendering -= OnFrame; MacLook.Smooth.End(); Close(); return; }
                 Frame(p);
             }
 
@@ -501,7 +501,7 @@ namespace MacLook
                 Show();
                 start = DateTime.Now;
                 Frame(0);
-                CompositionTarget.Rendering += OnFrame;
+                CompositionTarget.Rendering += OnFrame; MacLook.Smooth.Begin();
             }
 
             private void OnFrame(object sender, EventArgs e)
@@ -509,7 +509,7 @@ namespace MacLook
                 double p = (DateTime.Now - start).TotalMilliseconds / (close ? 210.0 : 520.0);
                 if (p >= 1)
                 {
-                    CompositionTarget.Rendering -= OnFrame;
+                    CompositionTarget.Rendering -= OnFrame; MacLook.Smooth.End();
                     Close();
                     return;
                 }

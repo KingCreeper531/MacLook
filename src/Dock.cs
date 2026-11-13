@@ -581,11 +581,17 @@ namespace MacLook
         {
             if (animating) return;
             animating = true;
-            CompositionTarget.Rendering += OnFrame;
+            CompositionTarget.Rendering += OnFrame; Smooth.Begin();
         }
+
+        private DateTime lastFrame = DateTime.MinValue;
 
         private void OnFrame(object sender, EventArgs e)
         {
+            // Time-based spring: identical feel at 60, 144 or 240 Hz.
+            var now = DateTime.Now;
+            double dt = lastFrame == DateTime.MinValue ? 1 / 60.0 : Math.Max(0.001, Math.Min(0.033, (now - lastFrame).TotalSeconds));
+            lastFrame = now;
             double total = 0;
             foreach (var it in items) total += it.IsSeparator ? SepWidth : Base + Gap;
             double u = mouseX - (ActualWidth / 2 - total / 2);
@@ -606,9 +612,10 @@ namespace MacLook
                     }
                     // Spring toward the target size (mass-spring-damper, like a physics-based dock).
                     double diff = target - it.Size;
-                    it.Vel = it.Vel * 0.6 + diff * 0.22;
-                    it.Size += it.Vel;
-                    if (Math.Abs(diff) < 0.15 && Math.Abs(it.Vel) < 0.08) { it.Size = target; it.Vel = 0; }
+                    // Slightly under-damped spring (stiffness 520, damping 38): quick, with a whisper of overshoot.
+                    it.Vel += (520 * diff - 38 * it.Vel) * dt;
+                    it.Size += it.Vel * dt;
+                    if (Math.Abs(diff) < 0.12 && Math.Abs(it.Vel) < 4) { it.Size = target; it.Vel = 0; }
                     else moving = true;
                     if (it.Size < Base * 0.9) it.Size = Base * 0.9;
                     if (it.Img.Width != it.Size) { it.Img.Width = it.Size; it.Img.Height = it.Size; }
@@ -625,8 +632,9 @@ namespace MacLook
             PositionLabel();
             if (!moving)
             {
-                CompositionTarget.Rendering -= OnFrame;
+                CompositionTarget.Rendering -= OnFrame; Smooth.End();
                 animating = false;
+                lastFrame = DateTime.MinValue;
                 // While magnifying, the glass just stretches; refresh it properly once things settle.
                 if (glassPending) { glassPending = false; ApplyGlass(); }
             }

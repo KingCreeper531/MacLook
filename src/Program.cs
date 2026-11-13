@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.4.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.4.2.0")]
+[assembly: System.Reflection.AssemblyVersion("2.4.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.4.3.0")]
 
 namespace MacLook
 {
@@ -31,7 +31,7 @@ namespace MacLook
         public static ForceQuitWindow ForceQuitWin;
         public static AboutWindow AboutWin;
         public static SwitcherWindow Switcher;
-        public static TrafficLightsWindow Lights;
+
         public static bool IsFullscreen;
         private static System.Windows.Threading.DispatcherTimer applyTimer;
 
@@ -67,6 +67,8 @@ namespace MacLook
 
             Directory.CreateDirectory(Config.Dir);
             Settings.Load();
+            Smooth.Init();
+            Log("Animations run at " + Smooth.RefreshRate + " fps");
 
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             Theme.Load();
@@ -101,7 +103,6 @@ namespace MacLook
             ForceQuitWin = new ForceQuitWindow();
             AboutWin = new AboutWindow();
             Switcher = new SwitcherWindow();
-            Lights = new TrafficLightsWindow();
 
             // Reserve the menu bar and dock areas first (windows move out of the way), then photograph
             // the empty desktop there before showing anything, so the glass has something real to refract.
@@ -119,7 +120,7 @@ namespace MacLook
                 WinKey.Install();
                 WindowAnimator.Install();
                 HotCorners.Start();
-                Lights.Start();
+                WindowButtons.Start();
                 if (Array.IndexOf(args, "--demo") < 0) Updater.Start();
                 if (Array.IndexOf(args, "--demo") >= 0) Demo();
             });
@@ -177,7 +178,7 @@ namespace MacLook
                 WindowGlass.Reapply();
                 WindowAnimator.ApplySystemAnimation();
                 MenuBar.RegisterShortcuts();
-                Lights.Refresh();
+                WindowButtons.Refresh();
                 Launchpad.ResetTiles();
             }
             catch (Exception ex) { Log(ex); }
@@ -294,7 +295,7 @@ namespace MacLook
             cleaned = true;
             try { WinKey.Uninstall(); } catch { }
             try { WindowAnimator.Uninstall(); } catch { }
-            try { if (Lights != null) Lights.Stop(); } catch { }
+            try { WindowButtons.Stop(); } catch { }
             try { WindowGlass.RestoreAll(); } catch { }
             try { AppBar.RemoveAll(); } catch { }
             try { Taskbar.Restore(); } catch { }

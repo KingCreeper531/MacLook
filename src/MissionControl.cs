@@ -118,7 +118,7 @@ namespace MacLook
                 Place(thumb, from);
             }
             animStart = DateTime.Now;
-            if (!animating) { animating = true; CompositionTarget.Rendering += OnFrame; }
+            if (!animating) { animating = true; CompositionTarget.Rendering += OnFrame; Smooth.Begin(); }
         }
 
         private void BuildOverlay(Thumb t)
@@ -176,7 +176,7 @@ namespace MacLook
             }
             if (t >= 1)
             {
-                CompositionTarget.Rendering -= OnFrame;
+                CompositionTarget.Rendering -= OnFrame; Smooth.End();
                 animating = false;
                 if (reversing) Finish();
             }
@@ -192,14 +192,14 @@ namespace MacLook
             foreach (var t in thumbs) { t.Caption.Opacity = 0; t.Hit.BorderBrush = Brushes.Transparent; }
             reversing = true;
             animStart = DateTime.Now;
-            if (!animating) { animating = true; CompositionTarget.Rendering += OnFrame; }
+            if (!animating) { animating = true; CompositionTarget.Rendering += OnFrame; Smooth.Begin(); }
         }
 
         private void Finish()
         {
             reversing = false;
             lastHidden = DateTime.Now;
-            if (animating) { CompositionTarget.Rendering -= OnFrame; animating = false; }
+            if (animating) { CompositionTarget.Rendering -= OnFrame; Smooth.End(); animating = false; }
             foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Handle);
             thumbs.Clear();
             canvas.Children.Clear();

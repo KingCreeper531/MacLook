@@ -46,6 +46,7 @@ namespace MacLook
         private double scale = 1;
         private int index;
         private bool animating;
+        private DateTime lastFrame = DateTime.MinValue;
 
         public bool IsOpen { get; private set; }
 
@@ -195,21 +196,25 @@ namespace MacLook
         {
             if (animating) return;
             animating = true;
-            CompositionTarget.Rendering += Frame;
+            CompositionTarget.Rendering += Frame; Smooth.Begin();
         }
 
         /// <summary>Cards pop in one after another, and the chosen card springs a little larger.</summary>
         private void Frame(object sender, EventArgs e)
         {
             bool busy = false;
+            var now = DateTime.Now;
+            double dt = lastFrame == DateTime.MinValue ? 1 / 60.0 : Math.Max(0.001, Math.Min(0.033, (now - lastFrame).TotalSeconds));
+            lastFrame = now;
+            double k = 1 - Math.Exp(-dt * 20);   // time-based easing, same speed at any refresh rate
             foreach (var c in cards)
             {
                 double d = c.SelTarget - c.Sel;
-                if (Math.Abs(d) > 0.01) { c.Sel += d * 0.3; busy = true; } else c.Sel = c.SelTarget;
+                if (Math.Abs(d) > 0.005) { c.Sel += d * k; busy = true; } else c.Sel = c.SelTarget;
                 if ((DateTime.Now - c.Start).TotalMilliseconds < 300) busy = true;
                 if (c.Thumb != IntPtr.Zero) Place(c);
             }
-            if (!busy) { CompositionTarget.Rendering -= Frame; animating = false; }
+            if (!busy) { CompositionTarget.Rendering -= Frame; Smooth.End(); animating = false; lastFrame = DateTime.MinValue; }
         }
 
         private static double Spring(double t)
@@ -300,7 +305,7 @@ namespace MacLook
         {
             if (!IsOpen) return;
             IsOpen = false;
-            if (animating) { CompositionTarget.Rendering -= Frame; animating = false; }
+            if (animating) { CompositionTarget.Rendering -= Frame; Smooth.End(); animating = false; }
             foreach (var c in cards) if (c.Thumb != IntPtr.Zero) Native.DwmUnregisterThumbnail(c.Thumb);
             cards.Clear();
             Hide();
