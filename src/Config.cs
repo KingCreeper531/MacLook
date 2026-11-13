@@ -236,7 +236,7 @@ namespace MacLook
         public static bool ScreenshotShortcuts = true;
         public static bool ForceQuitShortcut = true;
         public static bool SwitcherAltTab = true;
-        public static string TrafficLights = "left";      // left | right | off
+        public static string WindowButtons = "replace";   // replace (cover Windows' buttons) | left | off
         public static bool MacSettingsForWindows = true;   // the Dock's Settings icon opens Mac Look's System Settings
         // Internal
         public static string OriginalWallpaper = "";

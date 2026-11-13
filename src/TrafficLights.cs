@@ -24,6 +24,13 @@ namespace MacLook
         private Native.WinEventDelegate proc;
         private IntPtr fgHook, moveHook;
         private readonly TextBlock[] symbols = new TextBlock[3];
+        private readonly StackPanel row;
+        private readonly Border patch;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr h);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr h, IntPtr dc);
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern uint GetPixel(IntPtr dc, int x, int y);
+        private const int DWMWA_CAPTION_BUTTON_BOUNDS = 5;
 
         public TrafficLightsWindow()
         {
@@ -34,15 +41,16 @@ namespace MacLook
             ShowActivated = false;
             Topmost = true;
             ResizeMode = ResizeMode.NoResize;
-            SizeToContent = SizeToContent.WidthAndHeight;
 
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2) };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2), VerticalAlignment = VerticalAlignment.Center };
             row.Children.Add(Light(0, "#FF5F57", "#E0443E", "×", () => Command(SC_CLOSE)));
             row.Children.Add(Light(1, "#FEBC2E", "#DEA123", "−", () => Command(SC_MINIMIZE)));
             row.Children.Add(Light(2, "#28C840", "#1AAB29", "+", () => Command(Native.IsZoomed(target) ? SC_RESTORE : SC_MAXIMIZE)));
             row.MouseEnter += (s, e) => { foreach (var t in symbols) t.Opacity = 1; };
             row.MouseLeave += (s, e) => { foreach (var t in symbols) t.Opacity = 0; };
-            Content = row;
+            this.row = row;
+            patch = new Border { Child = row };
+            Content = patch;
 
             SourceInitialized += (s, e) =>
             {
@@ -112,7 +120,7 @@ namespace MacLook
             if (h == hwnd) return;
             if (moveHook != IntPtr.Zero) { Native.UnhookWinEvent(moveHook); moveHook = IntPtr.Zero; }
             target = IntPtr.Zero;
-            if (Settings.TrafficLights == "off" || h == IntPtr.Zero || Program.IsFullscreen || !Eligible(h)) { Hide(); return; }
+            if (Settings.WindowButtons == "off" || h == IntPtr.Zero || Program.IsFullscreen || !Eligible(h)) { Hide(); return; }
             target = h;
             uint pid;
             Native.GetWindowThreadProcessId(h, out pid);
@@ -140,13 +148,56 @@ namespace MacLook
             if (Native.IsIconic(target) || !Native.IsWindowVisible(target)) { Hide(); return; }
             var r = Native.FrameRect(target);
             if (r.Right - r.Left < 200 || r.Bottom - r.Top < 80) { Hide(); return; }
+
+            if (Settings.WindowButtons == "left")
+            {
+                patch.Background = Brushes.Transparent;
+                row.HorizontalAlignment = HorizontalAlignment.Left;
+                row.Margin = new Thickness(2);
+                Width = 70; Height = 18;
+                Left = (r.Left + 10 * scale) / scale;
+                Top = (r.Top + (Native.IsZoomed(target) ? 8 : 9) * scale) / scale;
+                if (!IsVisible) Show();
+                return;
+            }
+
+            // "Replace": find exactly where Windows draws minimize / maximize / close for this window.
+            Native.RECT wr, cb;
+            Native.GetWindowRect(target, out wr);
+            double bx, by, bw, bh;
+            if (Native.DwmGetWindowAttribute(target, DWMWA_CAPTION_BUTTON_BOUNDS, out cb, 16) == 0 && cb.Right - cb.Left > 20 && cb.Bottom - cb.Top > 10)
+            {
+                bx = wr.Left + cb.Left; by = wr.Top + cb.Top; bw = cb.Right - cb.Left; bh = cb.Bottom - cb.Top;
+                if (bx + bw > r.Right) bw = r.Right - bx;          // keep inside the visible frame
+                if (by < r.Top) { bh -= r.Top - by; by = r.Top; }
+            }
+            else
+            {
+                bw = 138 * scale; bh = 32 * scale;                 // Windows 11 default: three 46 px buttons
+                bx = r.Right - bw; by = r.Top;
+            }
+
+            // Paint the patch in the title bar's own colour so Windows' buttons disappear under it.
+            patch.Background = new SolidColorBrush(SampleTitleBar((int)(bx - 6 * scale), (int)(by + bh / 2)));
+            row.HorizontalAlignment = HorizontalAlignment.Right;
+            row.Margin = new Thickness(0, 0, 14, 0);
+            Width = Math.Max(76, bw / scale);
+            Height = Math.Max(20, bh / scale);
+            Left = bx / scale;
+            Top = by / scale;
             if (!IsVisible) Show();
-            UpdateLayout();
-            double w = ActualWidth * scale;
-            double x = Settings.TrafficLights == "right" ? r.Right - w - 150 * scale : r.Left + 10 * scale;
-            double y = r.Top + (Native.IsZoomed(target) ? 8 : 9) * scale;
-            Left = x / scale;
-            Top = y / scale;
+        }
+
+        private static Color SampleTitleBar(int x, int y)
+        {
+            IntPtr dc = GetDC(IntPtr.Zero);
+            try
+            {
+                uint c = GetPixel(dc, x, y);
+                if (c == 0xFFFFFFFF) return Color.FromRgb(32, 32, 32);
+                return Color.FromRgb((byte)(c & 0xFF), (byte)((c >> 8) & 0xFF), (byte)((c >> 16) & 0xFF));
+            }
+            finally { ReleaseDC(IntPtr.Zero, dc); }
         }
     }
 }

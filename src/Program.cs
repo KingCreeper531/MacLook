@@ -10,8 +10,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Mac Look: a macOS-style desktop for Windows.")]
 [assembly: System.Reflection.AssemblyCompany("Mac Look (github.com/KingCreeper531/MacLook)")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 KingCreeper531")]
-[assembly: System.Reflection.AssemblyVersion("2.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("2.4.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.4.1.0")]
 
 namespace MacLook
 {
@@ -219,13 +219,10 @@ namespace MacLook
             Native.GetCursorPos(out orig);
             var steps = new Action[]
             {
-                () => Switcher.Open(false), () => SaveCenter("1-switcher"), () => Switcher.Next(), () => SaveCenter("2-switcher-next"), () => Switcher.Cancel(),
-                () => SaveLights("3-traffic-lights"),
-                () => SettingsWin.Open("Sound"), () => SaveCenter("4-settings-sound"),
-                () => SettingsWin.Open("Storage"), () => SaveCenter("5-settings-storage"),
-                () => SettingsWin.Open("Wallpaper"), () => SaveCenter("6-settings-wallpaper"), () => SettingsWin.Hide(),
+                () => SaveButtons("1-window-buttons"),
+                () => Switcher.Open(false), () => { }, () => SaveCenter("2-switcher"), () => Switcher.Next(), () => SaveCenter("3-switcher-next"), () => Switcher.Cancel(),
                 Quit
-            };        int i = 0;
+            };       int i = 0;
             Action next = null;
             next = () =>
             {
@@ -247,6 +244,12 @@ namespace MacLook
         {
             var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
             Save(name, ScreenCapture.CaptureRegion(b.Left + b.Width / 2 - 700, b.Top + 120, 1400, 900));
+        }
+
+        private static void SaveButtons(string name)
+        {
+            var r = Native.FrameRect(Native.GetForegroundWindow());
+            Save(name, ScreenCapture.CaptureRegion(r.Right - 360, r.Top, 360, 60));
         }
 
         private static void SaveLights(string name)
